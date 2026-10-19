@@ -14,7 +14,8 @@
            background: #0b0f14c8; backdrop-filter: blur(6px); color: #e5e1d8; font: 12px/1.3 system-ui, sans-serif; }
   #panel.hidden { display: none; }
   #panel label { display: grid; grid-template-columns: 1fr 110px 40px; gap: 6px; align-items: center; margin: 3px 0; }
-  #panel input { width: 110px; accent-color: #e2a04e; }
+  #panel input, #panel select { width: 110px; accent-color: #e2a04e; }
+  #panel input[type=checkbox] { width: auto; justify-self: start; margin: 0; }
   #panel output { text-align: right; font-variant-numeric: tabular-nums; opacity: .8; }
   #err { position: fixed; inset: 0; display: none; padding: 40px; color: #f88; font: 16px system-ui; white-space: pre-wrap; background: #000; }
 </style>
@@ -23,7 +24,7 @@
 <canvas id="c"></canvas>
 <div id="hud">
   <div id="fps">starting…</div>
-  <div class="help">click: mouse look · WASD move · Space/E up · Q/C down · Shift fast · wheel speed · H panel</div>
+  <div class="help">click: mouse look · WASD move · Space/E up · Q/C down · Shift fast · wheel speed · H panel · M sound</div>
 </div>
 <div id="panel" class="hidden"></div>
 <div id="err"></div>
@@ -1550,11 +1551,175 @@ fn ign(p: vec2f) -> f32 { return fract(52.9829189 * fract(dot(p, vec2f(0.0671105
 }
 `;
 
+// ---- js/audio.js ----
+// Procedural soundscape, synthesised with Web Audio so the page still needs no asset files:
+//   ocean  — open-sea wash timed to the swell period, low rumble, wind noise; all follow P
+//   music  — 'pad': slow ambient chords with soft bells, 'file': a local file the user picks
+// Browsers only allow audio after a user gesture, so setOn(true) must come from one.
+function createSoundscape(P) {
+  const S = { on: false, ocean: 0.7, music: 0.35, mode: 'pad' };   // mode: off | pad | file
+  let ac = null, master, oceanBus, musicBus, waveGain, waveFilter, wavePan, windGain, windFilter, rumbleGain;
+  let waveTimer = 0, padTimer = 0, bellTimer = 0, offTimer = 0, chord = 0, fileEl = null, fileSrc = null;
+
+  const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
+
+  function noise(sec, brown) {
+    const buf = ac.createBuffer(2, ac.sampleRate * sec, ac.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch);
+      let b = 0;
+      for (let i = 0; i < d.length; i++) {
+        const w = Math.random() * 2 - 1;
+        if (brown) { b = (b + 0.02 * w) / 1.02; d[i] = b * 3.5; } else d[i] = w;
+      }
+    }
+    const src = ac.createBufferSource();
+    src.buffer = buf; src.loop = true; src.start();
+    return src;
+  }
+  function wire(first, ...rest) {
+    let cur = first;
+    for (const n of rest) { cur.connect(n); cur = n; }
+  }
+  function gainNode(v) { const g = ac.createGain(); g.gain.value = v; return g; }
+  function filter(type, freq, q) {
+    const f = ac.createBiquadFilter();
+    f.type = type; f.frequency.value = freq; f.Q.value = q;
+    return f;
+  }
+
+  function build() {
+    ac = new AudioContext();
+    master = gainNode(0); master.connect(ac.destination);
+    oceanBus = gainNode(S.ocean); oceanBus.connect(master);
+    musicBus = gainNode(S.music); musicBus.connect(master);
+    // a soft echo gives the music some space without a convolution reverb
+    const echo = ac.createDelay(1), fb = gainNode(0.38), damp = filter('lowpass', 1800, 0.5);
+    musicBus.connect(echo); echo.delayTime.value = 0.43;
+    wire(echo, damp, fb, echo); damp.connect(master);
+
+    const white = noise(4, false), brown = noise(4, true);
+    waveFilter = filter('lowpass', 400, 0.3); waveGain = gainNode(0); wavePan = ac.createStereoPanner();
+    wire(white, waveFilter, waveGain, wavePan, oceanBus);
+    windFilter = filter('bandpass', 500, 0.6); windGain = gainNode(0);
+    wire(white, windFilter, windGain, oceanBus);
+    rumbleGain = gainNode(0);
+    wire(brown, filter('lowpass', 260, 0.5), rumbleGain, oceanBus);
+  }
+
+  // One swell crest washing past: the noise swells and brightens, then settles.
+  function wave() {
+    const t = ac.currentTime;
+    const period = Math.sqrt(2 * Math.PI * P.swellLength / 9.81);            // deep-water swell period
+    const amp = clamp01(0.12 + 0.1 * P.swellHs + 0.025 * P.windSpeed) * rnd(0.6, 1.0);
+    const rise = period * rnd(0.3, 0.45), fall = period * rnd(0.5, 0.8);
+    waveGain.gain.setTargetAtTime(amp, t, rise / 3);
+    waveGain.gain.setTargetAtTime(amp * 0.15, t + rise, fall / 3);
+    waveFilter.frequency.setTargetAtTime(700 + 70 * P.windSpeed * amp, t, rise / 3);
+    waveFilter.frequency.setTargetAtTime(320, t + rise, fall / 3);
+    wavePan.pan.setTargetAtTime(rnd(-0.5, 0.5), t, period / 3);
+    // wind and rumble only need to follow the sliders, so they ride along with the waves
+    windGain.gain.setTargetAtTime(Math.min(0.35, 0.0016 * P.windSpeed * P.windSpeed) * rnd(0.6, 1.2), t, 1.5);
+    windFilter.frequency.setTargetAtTime((300 + 45 * P.windSpeed) * rnd(0.8, 1.25), t, 2);
+    rumbleGain.gain.setTargetAtTime(0.06 + 0.03 * P.swellHs, t, 2);
+    waveTimer = setTimeout(wave, period * rnd(0.55, 0.95) * 1000);
+  }
+
+  // Fmaj7 · Cadd9 · Am7 · Gsus2, bass note first; one chord every 14 s with long crossfades
+  const CHORDS = [[41, 57, 60, 64], [48, 55, 62, 64], [45, 57, 60, 67], [43, 55, 57, 62]];
+  const BELLS = [72, 74, 76, 79, 81, 84];
+  function pad() {
+    const t = ac.currentTime, len = 14, notes = CHORDS[chord++ % CHORDS.length];
+    const lp = filter('lowpass', 1100, 0.4), env = gainNode(0);
+    wire(lp, env, musicBus);
+    env.gain.setTargetAtTime(0.11, t, 1.8);
+    env.gain.setTargetAtTime(0, t + len - 2, 2.2);
+    notes.forEach((m, i) => {
+      for (const [type, cents] of [['sine', -4], ['triangle', 4]]) {
+        const o = ac.createOscillator(), g = gainNode(i === 0 ? 0.55 : 0.35);
+        o.type = type; o.frequency.value = mtof(m); o.detune.value = cents;
+        wire(o, g, lp);
+        o.start(t); o.stop(t + len + 8);
+      }
+    });
+    padTimer = setTimeout(pad, (len - 3) * 1000);
+  }
+  function bell() {
+    const t = ac.currentTime;
+    const o = ac.createOscillator(), g = gainNode(0), pan = ac.createStereoPanner();
+    o.frequency.value = mtof(BELLS[Math.floor(Math.random() * BELLS.length)]);
+    pan.pan.value = rnd(-0.6, 0.6);
+    wire(o, g, pan, musicBus);
+    g.gain.setTargetAtTime(0.05, t, 0.01);
+    g.gain.setTargetAtTime(0, t + 0.05, 1.1);
+    o.start(t); o.stop(t + 6);
+    bellTimer = setTimeout(bell, rnd(3, 8) * 1000);
+  }
+
+  function stopMusic() {
+    clearTimeout(padTimer); clearTimeout(bellTimer); padTimer = bellTimer = 0;
+    if (fileEl) fileEl.pause();
+  }
+  function startMusic() {
+    stopMusic();
+    if (!S.on) return;
+    if (S.mode === 'pad') { pad(); bellTimer = setTimeout(bell, 4000); }
+    if (S.mode === 'file' && fileEl) fileEl.play().catch(() => {});
+  }
+
+  function setOn(on) {
+    if (on === S.on) return;
+    S.on = on;
+    clearTimeout(offTimer);
+    if (on) {
+      if (!ac) build();
+      ac.resume();
+      master.gain.setTargetAtTime(1, ac.currentTime, 0.8);
+      if (!waveTimer) wave();
+      startMusic();
+    } else if (ac) {
+      master.gain.setTargetAtTime(0, ac.currentTime, 0.3);
+      offTimer = setTimeout(() => {
+        clearTimeout(waveTimer); waveTimer = 0;
+        stopMusic();
+        ac.suspend();
+      }, 1500);
+    }
+  }
+
+  return {
+    get on() { return S.on; },
+    get mode() { return S.mode; },
+    setOn,
+    toggle() { setOn(!S.on); },
+    setOcean(v) { S.ocean = v; if (ac) oceanBus.gain.setTargetAtTime(v, ac.currentTime, 0.1); },
+    setMusic(v) { S.music = v; if (ac) musicBus.gain.setTargetAtTime(v, ac.currentTime, 0.1); },
+    setMode(mode) { S.mode = mode; if (ac) startMusic(); },
+    // play a local audio file on loop; it goes through the music bus so the volume slider applies
+    loadFile(file) {
+      if (!ac) build();
+      if (!fileEl) {
+        fileEl = new Audio();
+        fileEl.loop = true;
+        fileSrc = ac.createMediaElementSource(fileEl);
+        fileSrc.connect(musicBus);
+      } else URL.revokeObjectURL(fileEl.src);
+      fileEl.src = URL.createObjectURL(file);
+      S.mode = 'file';
+      setOn(true);
+      startMusic();
+    },
+  };
+}
+
 // ---- js/main.js ----
 // WebGPU ocean — custom renderer.
 // FFT ocean (5 cascades) + CDLOD surface mesh + physically based sky + HDR post.
 // All per-frame data lives in preallocated typed arrays / descriptors (no per-frame garbage
 // apart from the unavoidable swap-chain view and command buffer objects).
+
 
 
 
@@ -1587,6 +1752,12 @@ const P = {
   clouds: 0.40,
   veil: 0.36,
   bloom: 0.10,
+};
+// Named starting points for P (?preset=original picks the upstream look). The first one loads
+// by default; the panel's preset menu switches between them.
+const PRESETS = {
+  'Taiwan sunset': { ...P, sunElev: 5, turbidity: 0.4, windSpeed: 6 },
+  'Original': { ...P },
 };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
@@ -2001,7 +2172,11 @@ async function main() {
   }
   if (qs.get('fov')) cam.fovY = Number(qs.get('fov')) * D2R;
   const keys = Object.create(null);
-  addEventListener('keydown', (e) => { keys[e.code] = true; if (e.code === 'KeyH') togglePanel(); });
+  addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    if (e.code === 'KeyH') togglePanel();
+    if (e.code === 'KeyM') { sound.toggle(); syncSound(); }
+  });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
   addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
   canvas.addEventListener('click', () => { if (document.pointerLockElement !== canvas) canvas.requestPointerLock(); });
@@ -2156,6 +2331,33 @@ async function main() {
   // --------------------------------------------------------------------------------------
   const panel = document.getElementById('panel');
   function togglePanel() { panel.classList.toggle('hidden'); }
+  function row(label, ...els) {
+    const r = document.createElement('label');
+    const name = document.createElement('span'); name.textContent = label;
+    r.append(name, ...els);
+    panel.appendChild(r);
+  }
+  function select(options, value, onChange) {
+    const s = document.createElement('select');
+    for (const o of options) { const [v, text] = Array.isArray(o) ? o : [o, o]; s.add(new Option(text, v)); }
+    s.value = value;
+    s.addEventListener('change', () => onChange(s.value));
+    return s;
+  }
+
+  const presetNames = Object.keys(PRESETS);
+  const qsPreset = (qs.get('preset') || '').toLowerCase();
+  let preset = presetNames.find((n) => n.toLowerCase().startsWith(qsPreset) && qsPreset) || presetNames[0];
+  const presetSel = select(presetNames, preset, (name) => { applyPreset(name); syncSliders(); });
+  row('Preset', presetSel);
+  function applyPreset(name) {
+    preset = name;
+    Object.assign(P, PRESETS[name]);
+    needSpectrum = true; needLUT = true; envFull = 2;
+  }
+
+  const sliderEls = [];
+  function syncSliders() { for (const [key, inp, val] of sliderEls) { inp.value = P[key]; val.textContent = String(P[key]); } }
   const SLIDERS = [
     ['windSpeed', 'Wind speed (m/s)', 2, 20, 0.1, 'spec'],
     ['windDir', 'Wind direction (deg)', 0, 360, 1, 'spec'],
@@ -2175,22 +2377,61 @@ async function main() {
     ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
-    const row = document.createElement('label');
-    const name = document.createElement('span'); name.textContent = label;
-    const val = document.createElement('output'); val.textContent = String(P[key]);
+    const val = document.createElement('output');
     const inp = document.createElement('input');
-    Object.assign(inp, { type: 'range', min, max, step, value: P[key] });
+    Object.assign(inp, { type: 'range', min, max, step });
     inp.addEventListener('input', () => {
       P[key] = Number(inp.value); val.textContent = inp.value;
       if (kind === 'spec') needSpectrum = true;
       if (kind === 'lut') needLUT = true;
       envFull = 2;
     });
-    row.append(name, inp, val);
-    panel.appendChild(row);
+    row(label, inp, val);
+    sliderEls.push([key, inp, val]);
   }
   if (qs.get('ui') === '0') { document.getElementById('hud').style.display = 'none'; panel.classList.add('hidden'); }
+  applyPreset(preset);
   for (const k of Object.keys(P)) if (qs.has(k)) P[k] = Number(qs.get(k));
+  syncSliders();
+
+  // Sound: off until the first click or key press, because browsers block audio before a user
+  // gesture. ?sound=0 keeps it off; M toggles it.
+  const sound = createSoundscape(P);
+  const soundBox = document.createElement('input');
+  soundBox.type = 'checkbox';
+  soundBox.addEventListener('change', () => sound.setOn(soundBox.checked));
+  const musicSel = select([['pad', 'Ambient'], ['file', 'My music file'], ['off', 'Off']], sound.mode, (m) => {
+    if (m === 'file' && !musicFile.files.length) { musicFile.click(); return; }
+    sound.setMode(m);
+  });
+  const musicFile = document.createElement('input');
+  Object.assign(musicFile, { type: 'file', accept: 'audio/*', hidden: true });
+  musicFile.addEventListener('change', () => {
+    if (musicFile.files.length) sound.loadFile(musicFile.files[0]);
+    syncSound();
+  });
+  musicFile.addEventListener('cancel', () => syncSound());
+  function volume(v, set) {
+    const inp = document.createElement('input'), val = document.createElement('output');
+    Object.assign(inp, { type: 'range', min: 0, max: 1, step: 0.01, value: v });
+    val.textContent = String(v);
+    inp.addEventListener('input', () => { set(Number(inp.value)); val.textContent = inp.value; });
+    return [inp, val];
+  }
+  function syncSound() { soundBox.checked = sound.on; musicSel.value = sound.mode; }
+  row('Sound (M)', soundBox);
+  row('Ocean volume', ...volume(0.7, sound.setOcean));
+  row('Music', musicSel, musicFile);
+  row('Music volume', ...volume(0.35, sound.setMusic));
+  if (qs.get('sound') !== '0') {
+    const firstGesture = () => {
+      removeEventListener('pointerdown', firstGesture);
+      removeEventListener('keydown', firstGesture);
+      if (!sound.on) { sound.setOn(true); syncSound(); }
+    };
+    addEventListener('pointerdown', firstGesture);
+    addEventListener('keydown', firstGesture);
+  }
 
   const hudFps = document.getElementById('fps');
 

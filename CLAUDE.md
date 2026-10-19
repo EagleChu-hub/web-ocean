@@ -19,6 +19,7 @@ npm run build    # 重新產生 ocean.html (~100 KB) 與 ocean.min.html (~61 KB)
 ## 檔案結構
 - `index.html` — 頁面外殼、HUD、設定面板樣式
 - `js/main.js` — 裝置初始化、資源、相機、每幀迴圈
+- `js/audio.js` — Web Audio 合成音景（海浪、風、環境音樂、自選音樂檔），讀取 `P` 即時跟著參數變化
 - `js/wgsl/common.js` — 共用 struct、常數、LEAN mapping
 - `js/wgsl/sim.js` — FFT 波浪模擬與泡沫
 - `js/wgsl/sky.js` — 大氣與雲
@@ -33,12 +34,15 @@ npm run build    # 重新產生 ocean.html (~100 KB) 與 ocean.min.html (~61 KB)
 1. ~~還原真實原始碼並確認可跑~~ ✅ 已直接以原作為基底，build 可重現與原作相同的 bundle
 2. 模組化重構：WGSL 改為 `.wgsl` 檔 + 預處理器管理共用 struct
 3. 相容性：WebGL2 fallback、手機降級（3 cascades）、依 GPU time 動態解析度
-4. 功能：海岸線 SDF、船隻、天氣、錄影輸出、台灣日落預設（sunElev 5, turbidity 0.4, windSpeed 6）
+4. 功能：海岸線 SDF、船隻、天氣、錄影輸出
+   - ✅ 台灣日落預設（sunElev 5, turbidity 0.4, windSpeed 6），`main.js` 的 `PRESETS`，開頁預設載入
+   - ✅ 背景音效／音樂（`js/audio.js`），M 鍵切換
 5. 文件與部署（Vercel）
 
 ## 開發規範
 - 維持單檔可用：`ocean.html` 必須能從 `file://` 直接開
-- 壓縮版目標維持約 61 KB
+- 壓縮版原為 61 KB，加入音效後約 66 KB；新增功能盡量精簡
+- 雲端容器的 Chromium 可用 SwiftShader 跑 WebGPU（`--enable-unsafe-webgpu --use-webgpu-adapter=swiftshader`），能測 UI 與錯誤，但 `?shot=` 截圖讀回會 device lost（原作同樣），畫面需本機確認
 - 使用 WGSL，不用 GLSL；以程序生成為主，避免外部貼圖與模型
 - 需要 Chrome/Edge 的 WebGPU；雲端容器沒有 GPU，視覺驗證需在本機進行
 

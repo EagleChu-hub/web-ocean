@@ -33,7 +33,14 @@ After editing anything under `js/`, run `npm run build` to regenerate both bundl
 | Space or E / Q or C | Up / down |
 | Shift | 5x speed |
 | Mouse wheel | Change base speed |
-| H | Settings panel: wind, swell, choppiness, turbidity, foam, sun, haze, clouds, exposure, bloom |
+| H | Settings panel: preset, wind, swell, choppiness, turbidity, foam, sun, haze, clouds, exposure, bloom, sound |
+| M | Sound on / off |
+
+### Presets and sound
+
+The page opens on the **Taiwan sunset** preset (sun 5° up, wind 6 m/s, clearer deep-blue water). Pick **Original** in the panel, or open with `?preset=original`, for the upstream look.
+
+Sound starts with your first click or key press (browsers block audio before that). It is synthesised live with Web Audio, so there are still no asset files: an open-sea wash timed to the swell period, wind that follows the wind slider, and an optional ambient pad with soft bells. **Music → My music file** plays any local audio file on loop instead. `?sound=0` keeps the page silent.
 
 The camera keeps itself above the displaced water surface, so waves never pass through it.
 

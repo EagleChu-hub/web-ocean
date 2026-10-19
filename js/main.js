@@ -7,6 +7,7 @@ import { SIM_INIT, SIM_EVOLVE, FFT_ROWS, FFT_COLS, SIM_MIPS, FOAM_TEX, RGBA8_MIP
 import { TRANS_LUT, MS_LUT, SKYVIEW_LUT, ENV_CUBE, CUBE_MIPS, SUN_VIS } from './wgsl/sky.js';
 import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
+import { createSoundscape } from './audio.js';
 
 const qs = new URLSearchParams(location.search);
 const DBG = Number(qs.get('dbg')) || 0;
@@ -35,6 +36,12 @@ export const P = {
   clouds: 0.40,
   veil: 0.36,
   bloom: 0.10,
+};
+// Named starting points for P (?preset=original picks the upstream look). The first one loads
+// by default; the panel's preset menu switches between them.
+const PRESETS = {
+  'Taiwan sunset': { ...P, sunElev: 5, turbidity: 0.4, windSpeed: 6 },
+  'Original': { ...P },
 };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
@@ -449,7 +456,11 @@ async function main() {
   }
   if (qs.get('fov')) cam.fovY = Number(qs.get('fov')) * D2R;
   const keys = Object.create(null);
-  addEventListener('keydown', (e) => { keys[e.code] = true; if (e.code === 'KeyH') togglePanel(); });
+  addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    if (e.code === 'KeyH') togglePanel();
+    if (e.code === 'KeyM') { sound.toggle(); syncSound(); }
+  });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
   addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
   canvas.addEventListener('click', () => { if (document.pointerLockElement !== canvas) canvas.requestPointerLock(); });
@@ -604,6 +615,33 @@ async function main() {
   // --------------------------------------------------------------------------------------
   const panel = document.getElementById('panel');
   function togglePanel() { panel.classList.toggle('hidden'); }
+  function row(label, ...els) {
+    const r = document.createElement('label');
+    const name = document.createElement('span'); name.textContent = label;
+    r.append(name, ...els);
+    panel.appendChild(r);
+  }
+  function select(options, value, onChange) {
+    const s = document.createElement('select');
+    for (const o of options) { const [v, text] = Array.isArray(o) ? o : [o, o]; s.add(new Option(text, v)); }
+    s.value = value;
+    s.addEventListener('change', () => onChange(s.value));
+    return s;
+  }
+
+  const presetNames = Object.keys(PRESETS);
+  const qsPreset = (qs.get('preset') || '').toLowerCase();
+  let preset = presetNames.find((n) => n.toLowerCase().startsWith(qsPreset) && qsPreset) || presetNames[0];
+  const presetSel = select(presetNames, preset, (name) => { applyPreset(name); syncSliders(); });
+  row('Preset', presetSel);
+  function applyPreset(name) {
+    preset = name;
+    Object.assign(P, PRESETS[name]);
+    needSpectrum = true; needLUT = true; envFull = 2;
+  }
+
+  const sliderEls = [];
+  function syncSliders() { for (const [key, inp, val] of sliderEls) { inp.value = P[key]; val.textContent = String(P[key]); } }
   const SLIDERS = [
     ['windSpeed', 'Wind speed (m/s)', 2, 20, 0.1, 'spec'],
     ['windDir', 'Wind direction (deg)', 0, 360, 1, 'spec'],
@@ -623,22 +661,61 @@ async function main() {
     ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
-    const row = document.createElement('label');
-    const name = document.createElement('span'); name.textContent = label;
-    const val = document.createElement('output'); val.textContent = String(P[key]);
+    const val = document.createElement('output');
     const inp = document.createElement('input');
-    Object.assign(inp, { type: 'range', min, max, step, value: P[key] });
+    Object.assign(inp, { type: 'range', min, max, step });
     inp.addEventListener('input', () => {
       P[key] = Number(inp.value); val.textContent = inp.value;
       if (kind === 'spec') needSpectrum = true;
       if (kind === 'lut') needLUT = true;
       envFull = 2;
     });
-    row.append(name, inp, val);
-    panel.appendChild(row);
+    row(label, inp, val);
+    sliderEls.push([key, inp, val]);
   }
   if (qs.get('ui') === '0') { document.getElementById('hud').style.display = 'none'; panel.classList.add('hidden'); }
+  applyPreset(preset);
   for (const k of Object.keys(P)) if (qs.has(k)) P[k] = Number(qs.get(k));
+  syncSliders();
+
+  // Sound: off until the first click or key press, because browsers block audio before a user
+  // gesture. ?sound=0 keeps it off; M toggles it.
+  const sound = createSoundscape(P);
+  const soundBox = document.createElement('input');
+  soundBox.type = 'checkbox';
+  soundBox.addEventListener('change', () => sound.setOn(soundBox.checked));
+  const musicSel = select([['pad', 'Ambient'], ['file', 'My music file'], ['off', 'Off']], sound.mode, (m) => {
+    if (m === 'file' && !musicFile.files.length) { musicFile.click(); return; }
+    sound.setMode(m);
+  });
+  const musicFile = document.createElement('input');
+  Object.assign(musicFile, { type: 'file', accept: 'audio/*', hidden: true });
+  musicFile.addEventListener('change', () => {
+    if (musicFile.files.length) sound.loadFile(musicFile.files[0]);
+    syncSound();
+  });
+  musicFile.addEventListener('cancel', () => syncSound());
+  function volume(v, set) {
+    const inp = document.createElement('input'), val = document.createElement('output');
+    Object.assign(inp, { type: 'range', min: 0, max: 1, step: 0.01, value: v });
+    val.textContent = String(v);
+    inp.addEventListener('input', () => { set(Number(inp.value)); val.textContent = inp.value; });
+    return [inp, val];
+  }
+  function syncSound() { soundBox.checked = sound.on; musicSel.value = sound.mode; }
+  row('Sound (M)', soundBox);
+  row('Ocean volume', ...volume(0.7, sound.setOcean));
+  row('Music', musicSel, musicFile);
+  row('Music volume', ...volume(0.35, sound.setMusic));
+  if (qs.get('sound') !== '0') {
+    const firstGesture = () => {
+      removeEventListener('pointerdown', firstGesture);
+      removeEventListener('keydown', firstGesture);
+      if (!sound.on) { sound.setOn(true); syncSound(); }
+    };
+    addEventListener('pointerdown', firstGesture);
+    addEventListener('keydown', firstGesture);
+  }
 
   const hudFps = document.getElementById('fps');
 
