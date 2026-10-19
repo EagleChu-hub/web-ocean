@@ -7,7 +7,10 @@ import { SIM_INIT, SIM_EVOLVE, FFT_ROWS, FFT_COLS, SIM_MIPS, FOAM_TEX, RGBA8_MIP
 import { TRANS_LUT, MS_LUT, SKYVIEW_LUT, ENV_CUBE, CUBE_MIPS, SUN_VIS } from './wgsl/sky.js';
 import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
-import { LAND, LAND_RINGS, LAND_SEGS, GULLS, GULL_COUNT, GULL_VERTS, PALMS, PALM_COUNT, PALM_VERTS } from './wgsl/land.js';
+import {
+  LAND, LAND_RINGS, LAND_SEGS, GULLS, GULL_COUNT, GULL_VERTS, PALMS, PALM_COUNT, PALM_VERTS,
+  LIGHTHOUSE, LIGHTHOUSE_VERTS, BEAM_VERTS, CRABS, CRAB_COUNT, CRAB_VERTS,
+} from './wgsl/land.js';
 import { createSoundscape } from './audio.js';
 
 const qs = new URLSearchParams(location.search);
@@ -322,7 +325,8 @@ async function main() {
   const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp], 'sky');
 
   // Beach terrain (camera-centred polar grid) and seagulls, drawn into the main pass.
-  const [landMod, gullMod, palmMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'), shader(PALMS, 'palms')]);
+  const [landMod, gullMod, palmMod, lhMod, crabMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'),
+    shader(PALMS, 'palms'), shader(LIGHTHOUSE, 'lighthouse'), shader(CRABS, 'crabs')]);
   const solidPipe = (module, label, alphaToCoverageEnabled = false) => device.createRenderPipelineAsync({
     label, layout: 'auto',
     vertex: { module, entryPoint: 'vs' },
@@ -331,12 +335,28 @@ async function main() {
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
     multisample: { count: MSAA, alphaToCoverageEnabled },
   });
-  const [landPipe, gullPipe, palmPipe] = await Promise.all([
-    solidPipe(landMod, 'land'), solidPipe(gullMod, 'gulls'), solidPipe(palmMod, 'palms', true)]);
+  const [landPipe, gullPipe, palmPipe, lhPipe, crabPipe, beamPipe] = await Promise.all([
+    solidPipe(landMod, 'land'), solidPipe(gullMod, 'gulls'), solidPipe(palmMod, 'palms', true),
+    solidPipe(lhMod, 'lighthouse'), solidPipe(crabMod, 'crabs'),
+    // the lighthouse beam glows on top of everything already drawn, sky included
+    device.createRenderPipelineAsync({
+      label: 'beam', layout: 'auto',
+      vertex: { module: lhMod, entryPoint: 'vsBeam' },
+      fragment: {
+        module: lhMod, entryPoint: 'fsBeam',
+        targets: [{ format: HDR, blend: { color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }, alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' } } }],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'greater' },
+      multisample: { count: MSAA },
+    })]);
   const landRes = [{ buffer: frameUBO }, transView, skyView, sampClamp, envCubeView, { buffer: sunVisBuf }];
   const bgLand = bg(landPipe, landRes, 'land');
   const bgGulls = bg(gullPipe, landRes, 'gulls');
   const bgPalms = bg(palmPipe, landRes, 'palms');
+  const bgLH = bg(lhPipe, landRes, 'lighthouse');
+  const bgCrabs = bg(crabPipe, landRes, 'crabs');
+  const bgBeam = bg(beamPipe, [{ buffer: frameUBO }], 'beam');   // the beam only reads the frame uniforms
   const landIdx = new Uint16Array(LAND_RINGS * LAND_SEGS * 6);
   {
     let k = 0;
@@ -985,10 +1005,21 @@ async function main() {
       rp.setPipeline(gullPipe);
       rp.setBindGroup(0, bgGulls);
       rp.draw(GULL_VERTS, GULL_COUNT);
+      rp.setPipeline(lhPipe);
+      rp.setBindGroup(0, bgLH);
+      rp.draw(LIGHTHOUSE_VERTS);
+      rp.setPipeline(crabPipe);
+      rp.setBindGroup(0, bgCrabs);
+      rp.draw(CRAB_VERTS, CRAB_COUNT);
     }
     rp.setPipeline(skyPipe);
     rp.setBindGroup(0, bgSky);
     rp.draw(3);
+    if (P.beach) {
+      rp.setPipeline(beamPipe);
+      rp.setBindGroup(0, bgBeam);
+      rp.draw(BEAM_VERTS);
+    }
     rp.end();
 
     for (let m = 0; m < BLOOM_LEVELS; m++) {

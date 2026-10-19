@@ -1146,6 +1146,8 @@ fn main(@builtin(local_invocation_index) k: u32) {
 //   LAND        sand beach, dunes and the two headlands of the cove
 //   GULLS       a few seagulls gliding and flapping over the beach
 //   PALMS       coconut palms along both sides of the beach, swaying in the wind
+//   LIGHTHOUSE  a lighthouse on the left headland with a rotating beam (BEAM entry points)
+//   CRABS       little crabs scuttling sideways across the sand
 
 
 // The camera starts on the sand looking out to sea (-Z). The waterline crosses the view
@@ -1573,6 +1575,259 @@ struct VO {
   }
   let col = alb * (sunE * max(dot(n, Ld), 0.0) * 0.318 + skyAmbient(n) * 0.85) + trans;
   return vec4f(aerial(col, in.rel), a);
+}
+`;
+
+// A lighthouse near the tip of the left headland: a tapered white tower with red bands, a
+// railed gallery, a glowing lantern and a dark cap, plus a keeper's house at its foot. The
+// lantern flashes whenever the rotating beam sweeps past the camera; BEAM is the beam itself,
+// drawn additively after the sky.
+const LH_SIDES = 12, LH_SEGS = 8;
+const LH_TOWER = LH_SIDES * LH_SEGS * 6, LH_GALLERY = LH_SIDES * 6, LH_LANTERN = LH_SIDES * 6, LH_CAP = LH_SIDES * 3;
+const LIGHTHOUSE_VERTS = LH_TOWER + LH_GALLERY + LH_LANTERN + LH_CAP + 30;
+const BEAM_VERTS = 2 * 8 * 3;
+const LH_COMMON = /* wgsl */ `
+const QUAD = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0));
+const LH_H: f32 = 21.0;
+const LH_S: f32 = 1.35;        // overall scale, so it reads from across the bay
+fn lhBase() -> vec3f {
+  let x = -255.0;
+  let z = shoreZ(x) + 28.0;
+  return vec3f(x, terrainH(vec2f(x, z)) - 0.5, z);
+}
+fn lampPos() -> vec3f { return lhBase() + vec3f(0.0, (LH_H + 1.4) * LH_S, 0.0); }
+// horizontal direction of the beam; one turn every 12 s
+fn beamDir() -> vec3f { let a = F.camPos.w * 0.5236; return vec3f(cos(a), 0.0, sin(a)); }
+// how strongly the beam stands out: hardly in daylight, clearly once the sun is low or down
+fn duskK() -> f32 { return 0.25 + 0.75 * (1.0 - smoothstep(-0.03, 0.15, F.sunDir.y)); }
+fn flashK() -> f32 {
+  let toCam = normalize(vec3f(F.camPos.x, 0.0, F.camPos.z) - vec3f(lampPos().x, 0.0, lampPos().z));
+  let c = dot(beamDir(), toCam);
+  return pow(max(c, 0.0), 60.0) + pow(max(-c, 0.0), 60.0);   // two opposite beams
+}
+`;
+const LIGHTHOUSE = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + LH_COMMON + /* wgsl */ `
+struct VO {
+  @builtin(position) pos: vec4f,
+  @location(0) rel: vec3f,
+  @location(1) nrm: vec3f,
+  @location(2) h: f32,         // height above the tower base (m)
+  @location(3) kind: f32,      // 0 tower, 1 dark metal, 2 lantern glass, 3 house
+};
+fn ring(a: f32) -> vec3f { return vec3f(cos(a), 0.0, sin(a)); }
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
+  let base = lhBase();
+  var p: vec3f;
+  var n: vec3f;
+  var kind = 0.0;
+  let TAU = 6.2831853;
+  if (vi < ${LH_TOWER}u) {
+    let q = vi / 6u;
+    let c = QUAD[vi % 6u];
+    let a = (f32(q % ${LH_SIDES}u) + c.x) / ${LH_SIDES}.0 * TAU;
+    let s = (f32(q / ${LH_SIDES}u) + c.y) / ${LH_SEGS}.0;
+    let r = mix(2.4, 1.5, s);
+    n = normalize(ring(a) + vec3f(0.0, 0.9 / LH_H, 0.0));
+    p = ring(a) * r + vec3f(0.0, s * LH_H, 0.0);
+  } else if (vi < ${LH_TOWER + LH_GALLERY}u) {
+    // gallery: a flat ring around the top of the tower
+    let j = vi - ${LH_TOWER}u;
+    let c = QUAD[j % 6u];
+    let a = (f32(j / 6u) + c.x) / ${LH_SIDES}.0 * TAU;
+    p = ring(a) * mix(1.3, 2.3, c.y) + vec3f(0.0, LH_H, 0.0);
+    n = vec3f(0.0, 1.0, 0.0);
+    kind = 1.0;
+  } else if (vi < ${LH_TOWER + LH_GALLERY + LH_LANTERN}u) {
+    let j = vi - ${LH_TOWER + LH_GALLERY}u;
+    let c = QUAD[j % 6u];
+    let a = (f32(j / 6u) + c.x) / ${LH_SIDES}.0 * TAU;
+    p = ring(a) * 1.05 + vec3f(0.0, LH_H + c.y * 2.6, 0.0);
+    n = ring(a);
+    kind = 2.0;
+  } else if (vi < ${LH_TOWER + LH_GALLERY + LH_LANTERN + LH_CAP}u) {
+    let j = vi - ${LH_TOWER + LH_GALLERY + LH_LANTERN}u;
+    let k = j % 3u;
+    let a = (f32(j / 3u) + select(0.0, 1.0, k == 1u)) / ${LH_SIDES}.0 * TAU;
+    p = select(ring(a) * 1.3 + vec3f(0.0, LH_H + 2.6, 0.0), vec3f(0.0, LH_H + 4.0, 0.0), k == 2u);
+    n = normalize(ring(a) + vec3f(0.0, 0.9, 0.0));
+    kind = 1.0;
+  } else {
+    // keeper's house: a box beside the tower (front, back, two sides and the roof)
+    let j = vi - ${LH_TOWER + LH_GALLERY + LH_LANTERN + LH_CAP}u;
+    let face = j / 6u;
+    let c = QUAD[j % 6u] * 2.0 - 1.0;
+    var b: vec3f;
+    if (face == 0u) { b = vec3f(c.x, c.y, 1.0); n = vec3f(0.0, 0.0, 1.0); }
+    else if (face == 1u) { b = vec3f(c.x, c.y, -1.0); n = vec3f(0.0, 0.0, -1.0); }
+    else if (face == 2u) { b = vec3f(1.0, c.y, c.x); n = vec3f(1.0, 0.0, 0.0); }
+    else if (face == 3u) { b = vec3f(-1.0, c.y, c.x); n = vec3f(-1.0, 0.0, 0.0); }
+    else { b = vec3f(c.x, 1.0, c.y); n = vec3f(0.0, 1.0, 0.0); }
+    p = vec3f(5.5, 1.6, 0.0) + b * vec3f(3.0, 1.6, 2.2);
+    kind = 3.0;
+  }
+  var o: VO;
+  o.rel = base + p * LH_S - F.camPos.xyz;
+  o.pos = F.viewProj * vec4f(o.rel, 1.0);
+  o.nrm = n;
+  o.h = p.y;
+  o.kind = kind;
+  return o;
+}
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let n = normalize(in.nrm);
+  let sunE = sunIlluminance() * sunVis[0];
+  var alb = vec3f(0.85, 0.84, 0.8);
+  if (in.kind < 0.5) {
+    // two red bands on the white tower
+    let band = step(0.3, fract(in.h / LH_H * 2.0 + 0.15)) * step(fract(in.h / LH_H * 2.0 + 0.15), 0.55);
+    alb = mix(alb, vec3f(0.6, 0.1, 0.08), band);
+  } else if (in.kind < 1.5) {
+    alb = vec3f(0.08, 0.08, 0.09);
+  } else if (in.kind > 2.5) {
+    alb = vec3f(0.8, 0.77, 0.7);
+    if (n.y > 0.5) { alb = vec3f(0.45, 0.15, 0.1); }
+  }
+  var col = alb * (sunE * max(dot(n, F.sunDir.xyz), 0.0) * 0.318 + skyAmbient(n) * 0.9);
+  if (in.kind > 1.5 && in.kind < 2.5) {
+    col = vec3f(1.0, 0.82, 0.5) * (4.0 + 60.0 * flashK()) * duskK();
+  }
+  return vec4f(aerial(col, in.rel), 1.0);
+}
+
+// The beam: two long cones from the lamp, added on top of the scene. Where the cone surface
+// faces the viewer we look through the most of it, so that is where it is brightest; it fades
+// along its length.
+struct BO {
+  @builtin(position) pos: vec4f,
+  @location(0) rel: vec3f,
+  @location(1) along: f32,
+  @location(2) nrm: vec3f,
+};
+@vertex fn vsBeam(@builtin(vertex_index) vi: u32) -> BO {
+  let beam = vi / 24u;
+  let j = vi % 24u;
+  let k = j % 3u;
+  let seg = f32(j / 3u) + select(0.0, 1.0, k == 1u);
+  let ax = beamDir() * select(1.0, -1.0, beam == 1u);
+  let up = vec3f(0.0, 1.0, 0.0);
+  let side = cross(ax, up);
+  let a = seg / 8.0 * 6.2831853;
+  let L = 420.0;
+  let radial = side * cos(a) + up * sin(a);
+  var p = lampPos();
+  var along = 0.0;
+  if (k != 2u) {
+    p += ax * L + radial * 16.0 - vec3f(0.0, 6.0, 0.0);
+    along = 1.0;
+  }
+  var o: BO;
+  o.rel = p - F.camPos.xyz;
+  o.pos = F.viewProj * vec4f(o.rel, 1.0);
+  o.along = along;
+  o.nrm = radial;
+  return o;
+}
+@fragment fn fsBeam(in: BO) -> @location(0) vec4f {
+  let V = normalize(in.rel);
+  let face = pow(abs(dot(normalize(in.nrm), V)), 2.0);
+  let k = face * (1.0 - in.along) * (1.0 - in.along) * duskK();
+  return vec4f(vec3f(1.0, 0.86, 0.6) * k * 0.35, 0.0);
+}
+`;
+
+// Little crabs on the beach, each scuttling sideways between two spots, resting in between.
+// Body (a domed fan), eight two-segment legs and two claws; all flat triangles.
+const CRAB_BODY = 10 * 3, CRAB_LEGS = 8 * 2 * 6, CRAB_CLAWS = 2 * 4 * 3;
+const CRAB_COUNT = 9, CRAB_VERTS = CRAB_BODY + CRAB_LEGS + CRAB_CLAWS;
+const CRABS = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + /* wgsl */ `
+const QUAD = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0));
+fn hash1(i: u32) -> f32 { return f32(pcgHash(i)) / 4294967296.0; }
+
+struct VO {
+  @builtin(position) pos: vec4f,
+  @location(0) rel: vec3f,
+  @location(1) nrm: vec3f,
+  @location(2) part: f32,      // 0 body, 1 legs, 2 claws
+};
+@vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VO {
+  let t = F.camPos.w;
+  let s = ii * 11u;
+  // most crabs close in front of where the camera starts, a few down by the water
+  let nearCam = ii < 6u;
+  let hx = -6.0 + 12.0 * hash1(s);
+  let hz = select(shoreZ(hx) + 2.0 + 6.0 * hash1(s + 1u), 9.0 + 8.0 * hash1(s + 1u), nearCam);
+  let a = hash1(s + 2u) * 6.2831853;
+  let dir = vec2f(cos(a), sin(a));
+  // ping-pong between two spots: a quick dash, then a rest of a few seconds
+  let period = 5.0 + 5.0 * hash1(s + 3u);
+  let cyc = t / period + hash1(s + 4u) * 10.0;
+  let phase = fract(cyc);
+  let dash = smoothstep(0.0, 0.18, phase);
+  let odd = (u32(floor(cyc)) & 1u) == 1u;
+  let x01 = select(dash, 1.0 - dash, odd);
+  let dist = 0.6 + 1.4 * hash1(s + 5u);
+  let xz = vec2f(hx, hz) + dir * (x01 - 0.5) * dist;
+  let moving = step(phase, 0.18);
+  let ground = terrainH(xz);
+  let scale = 1.8 * (0.8 + 0.4 * hash1(s + 6u));
+
+  // crabs walk sideways: the body's right axis is the direction of travel
+  let R = vec3f(dir.x, 0.0, dir.y);
+  let Fw = vec3f(-dir.y, 0.0, dir.x);
+  let U = vec3f(0.0, 1.0, 0.0);
+  var lp: vec3f;
+  var n = U;
+  var part = 0.0;
+  if (vi < ${CRAB_BODY}u) {
+    let k = vi % 3u;
+    let a0 = (f32(vi / 3u) + select(0.0, 1.0, k == 1u)) / 10.0 * 6.2831853;
+    lp = select(vec3f(cos(a0) * 0.055, 0.03, sin(a0) * 0.04), vec3f(0.0, 0.05, 0.0), k == 2u);
+    n = normalize(vec3f(cos(a0) * 0.6, 1.0, sin(a0) * 0.6));
+  } else if (vi < ${CRAB_BODY + CRAB_LEGS}u) {
+    let j = vi - ${CRAB_BODY}u;
+    let leg = j / 12u;
+    let segN = (j % 12u) / 6u;
+    let c = QUAD[j % 6u];
+    let sideS = select(-1.0, 1.0, leg >= 4u);
+    let li = f32(leg % 4u);
+    let fwd = (li - 1.5) * 0.022;
+    // legs on alternate sides step in opposite phase while the crab runs
+    let stepA = moving * sin(t * 40.0 + li * 1.7 + sideS) * 0.012;
+    let root = vec3f(sideS * 0.045, 0.03, fwd);
+    let knee = vec3f(sideS * 0.085, 0.055, fwd * 1.5 + stepA);
+    let tip = vec3f(sideS * 0.12, -0.03, fwd * 2.0 - stepA);
+    let a0 = select(root, knee, segN == 1u);
+    let b0 = select(knee, tip, segN == 1u);
+    let w = vec3f(0.0, 0.0, 0.006);
+    lp = mix(a0, b0, c.x) + w * (c.y * 2.0 - 1.0);
+    part = 1.0;
+  } else {
+    let j = vi - ${CRAB_BODY + CRAB_LEGS}u;
+    let claw = j / 12u;
+    let k = j % 3u;
+    let sideS = select(-1.0, 1.0, claw == 1u);
+    let a0 = (f32((j % 12u) / 3u) + select(0.0, 1.0, k == 1u)) / 4.0 * 6.2831853;
+    let centre = vec3f(sideS * 0.035, 0.035, 0.075);
+    lp = select(centre + vec3f(cos(a0) * 0.022, 0.0, sin(a0) * 0.016), centre + vec3f(0.0, 0.012, 0.0), k == 2u);
+    part = 2.0;
+  }
+  lp *= scale;
+  let world = vec3f(xz.x, ground, xz.y) + R * lp.x + U * lp.y + Fw * lp.z;
+  var o: VO;
+  o.rel = world - F.camPos.xyz;
+  o.pos = F.viewProj * vec4f(o.rel, 1.0);
+  o.nrm = n;
+  o.part = part;
+  return o;
+}
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let n = normalize(in.nrm);
+  let sunE = sunIlluminance() * sunVis[0];
+  var alb = vec3f(0.72, 0.36, 0.18);
+  if (in.part > 0.5) { alb = vec3f(0.8, 0.5, 0.3); }
+  if (in.part > 1.5) { alb = vec3f(0.85, 0.4, 0.2); }
+  let col = alb * (sunE * max(dot(n, F.sunDir.xyz), 0.0) * 0.318 + skyAmbient(n) * 0.9);
+  return vec4f(aerial(col, in.rel), 1.0);
 }
 `;
 
@@ -2559,7 +2814,8 @@ async function main() {
   const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp], 'sky');
 
   // Beach terrain (camera-centred polar grid) and seagulls, drawn into the main pass.
-  const [landMod, gullMod, palmMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'), shader(PALMS, 'palms')]);
+  const [landMod, gullMod, palmMod, lhMod, crabMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'),
+    shader(PALMS, 'palms'), shader(LIGHTHOUSE, 'lighthouse'), shader(CRABS, 'crabs')]);
   const solidPipe = (module, label, alphaToCoverageEnabled = false) => device.createRenderPipelineAsync({
     label, layout: 'auto',
     vertex: { module, entryPoint: 'vs' },
@@ -2568,12 +2824,28 @@ async function main() {
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
     multisample: { count: MSAA, alphaToCoverageEnabled },
   });
-  const [landPipe, gullPipe, palmPipe] = await Promise.all([
-    solidPipe(landMod, 'land'), solidPipe(gullMod, 'gulls'), solidPipe(palmMod, 'palms', true)]);
+  const [landPipe, gullPipe, palmPipe, lhPipe, crabPipe, beamPipe] = await Promise.all([
+    solidPipe(landMod, 'land'), solidPipe(gullMod, 'gulls'), solidPipe(palmMod, 'palms', true),
+    solidPipe(lhMod, 'lighthouse'), solidPipe(crabMod, 'crabs'),
+    // the lighthouse beam glows on top of everything already drawn, sky included
+    device.createRenderPipelineAsync({
+      label: 'beam', layout: 'auto',
+      vertex: { module: lhMod, entryPoint: 'vsBeam' },
+      fragment: {
+        module: lhMod, entryPoint: 'fsBeam',
+        targets: [{ format: HDR, blend: { color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }, alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' } } }],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'greater' },
+      multisample: { count: MSAA },
+    })]);
   const landRes = [{ buffer: frameUBO }, transView, skyView, sampClamp, envCubeView, { buffer: sunVisBuf }];
   const bgLand = bg(landPipe, landRes, 'land');
   const bgGulls = bg(gullPipe, landRes, 'gulls');
   const bgPalms = bg(palmPipe, landRes, 'palms');
+  const bgLH = bg(lhPipe, landRes, 'lighthouse');
+  const bgCrabs = bg(crabPipe, landRes, 'crabs');
+  const bgBeam = bg(beamPipe, [{ buffer: frameUBO }], 'beam');   // the beam only reads the frame uniforms
   const landIdx = new Uint16Array(LAND_RINGS * LAND_SEGS * 6);
   {
     let k = 0;
@@ -3222,10 +3494,21 @@ async function main() {
       rp.setPipeline(gullPipe);
       rp.setBindGroup(0, bgGulls);
       rp.draw(GULL_VERTS, GULL_COUNT);
+      rp.setPipeline(lhPipe);
+      rp.setBindGroup(0, bgLH);
+      rp.draw(LIGHTHOUSE_VERTS);
+      rp.setPipeline(crabPipe);
+      rp.setBindGroup(0, bgCrabs);
+      rp.draw(CRAB_VERTS, CRAB_COUNT);
     }
     rp.setPipeline(skyPipe);
     rp.setBindGroup(0, bgSky);
     rp.draw(3);
+    if (P.beach) {
+      rp.setPipeline(beamPipe);
+      rp.setBindGroup(0, bgBeam);
+      rp.draw(BEAM_VERTS);
+    }
     rp.end();
 
     for (let m = 0; m < BLOOM_LEVELS; m++) {
