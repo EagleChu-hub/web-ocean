@@ -7,7 +7,7 @@ import { SIM_INIT, SIM_EVOLVE, FFT_ROWS, FFT_COLS, SIM_MIPS, FOAM_TEX, RGBA8_MIP
 import { TRANS_LUT, MS_LUT, SKYVIEW_LUT, ENV_CUBE, CUBE_MIPS, SUN_VIS } from './wgsl/sky.js';
 import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
-import { LAND, LAND_RINGS, LAND_SEGS, GULLS, GULL_COUNT, GULL_VERTS } from './wgsl/land.js';
+import { LAND, LAND_RINGS, LAND_SEGS, GULLS, GULL_COUNT, GULL_VERTS, PALMS, PALM_COUNT, PALM_VERTS } from './wgsl/land.js';
 import { createSoundscape } from './audio.js';
 
 const qs = new URLSearchParams(location.search);
@@ -322,19 +322,21 @@ async function main() {
   const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp], 'sky');
 
   // Beach terrain (camera-centred polar grid) and seagulls, drawn into the main pass.
-  const [landMod, gullMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls')]);
-  const solidPipe = (module, label) => device.createRenderPipelineAsync({
+  const [landMod, gullMod, palmMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'), shader(PALMS, 'palms')]);
+  const solidPipe = (module, label, alphaToCoverageEnabled = false) => device.createRenderPipelineAsync({
     label, layout: 'auto',
     vertex: { module, entryPoint: 'vs' },
     fragment: { module, entryPoint: 'fs', targets: [{ format: HDR }] },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
-    multisample: { count: MSAA },
+    multisample: { count: MSAA, alphaToCoverageEnabled },
   });
-  const [landPipe, gullPipe] = await Promise.all([solidPipe(landMod, 'land'), solidPipe(gullMod, 'gulls')]);
+  const [landPipe, gullPipe, palmPipe] = await Promise.all([
+    solidPipe(landMod, 'land'), solidPipe(gullMod, 'gulls'), solidPipe(palmMod, 'palms', true)]);
   const landRes = [{ buffer: frameUBO }, transView, skyView, sampClamp, envCubeView, { buffer: sunVisBuf }];
   const bgLand = bg(landPipe, landRes, 'land');
   const bgGulls = bg(gullPipe, landRes, 'gulls');
+  const bgPalms = bg(palmPipe, landRes, 'palms');
   const landIdx = new Uint16Array(LAND_RINGS * LAND_SEGS * 6);
   {
     let k = 0;
@@ -643,7 +645,9 @@ async function main() {
 
   function writeFrame(time) {
     const aspect = W / H;
-    const tanY = Math.tan(cam.fovY * 0.5), tanX = tanY * aspect;
+    // portrait phones get a taller field of view so the scene is not cropped to a sliver
+    const fovY = aspect < 1 ? Math.max(cam.fovY, 72 * D2R) : cam.fovY;
+    const tanY = Math.tan(fovY * 0.5), tanX = tanY * aspect;
     const near = 0.05;
     proj.fill(0);
     proj[0] = 1 / tanX; proj[5] = 1 / tanY; proj[11] = -1; proj[14] = near;
@@ -759,6 +763,8 @@ async function main() {
   applyPreset(preset);
   for (const k of Object.keys(P)) if (qs.has(k)) P[k] = Number(qs.get(k));
   syncSliders();
+  // with the beach on, start further up the sand so the palms and the bay are in view
+  if (P.beach && !qs.get('cam')) { cam.z = 22; cam.y = 3.3; cam.pitch = -4 * D2R; }
 
   // Sound: off until the first click or key press, because browsers block audio before a user
   // gesture. ?sound=0 keeps it off; M toggles it.
@@ -973,6 +979,9 @@ async function main() {
       rp.setBindGroup(0, bgLand);
       rp.setIndexBuffer(landIdxBuf, 'uint16');
       rp.drawIndexed(landIdx.length);
+      rp.setPipeline(palmPipe);
+      rp.setBindGroup(0, bgPalms);
+      rp.draw(PALM_VERTS, PALM_COUNT);
       rp.setPipeline(gullPipe);
       rp.setBindGroup(0, bgGulls);
       rp.draw(GULL_VERTS, GULL_COUNT);

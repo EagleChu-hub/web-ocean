@@ -40,7 +40,7 @@ On phones and tablets: drag with one finger to look around, tap once to start th
 
 ### Presets, beach and sound
 
-The page opens on the **Taiwan sunset** preset: you stand on a sandy cove at sunset (sun 5° up, wind 6 m/s, clearer deep-blue water), with a headland on each side and seagulls gliding overhead. Near the beach the waves die down, the water runs up and back down the sand, and surf lines roll in. Pick **Original** in the panel, or open with `?preset=original`, for the upstream open-ocean look; the **Beach & gulls** slider switches the cove on its own.
+The page opens on the **Taiwan sunset** preset: you stand on the sand of a curved bay at sunset (sun 5° up, wind 6 m/s, clearer deep-blue water), with a headland on each side, coconut palms swaying along the beach and seagulls gliding overhead. Close up, the sand has wind ripples, a line of washed-up seaweed, shells, starfish and pebbles, and two trails of footprints, a large one and a small one, leading down to the water. Near the beach the waves die down, the water runs up and back down the sand, and surf lines roll in. Pick **Original** in the panel, or open with `?preset=original`, for the upstream open-ocean look; the **Beach & gulls** slider switches the cove on its own.
 
 Sound starts with your first click, tap or key press (browsers block audio before that). It is synthesised live with Web Audio, so there are still no asset files: waves breaking on the beach timed to the swell period, the hiss of the backwash, wind that follows the wind slider, the odd seagull, and an optional ambient pad with soft bells. **Music → My music file** plays any local audio file on loop instead. `?sound=0` keeps the page silent.
 
