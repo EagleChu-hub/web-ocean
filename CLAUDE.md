@@ -12,14 +12,15 @@
 ```bash
 npm install
 npm start        # http://localhost:8080/
-npm run build    # 重新產生 ocean.html (~100 KB) 與 ocean.min.html (~61 KB)
+npm run build    # 重新產生 ocean.html (~130 KB) 與 ocean.min.html (~78 KB)
 ```
 修改 `js/` 下任何檔案後都要 `npm run build`，並確認兩個 bundle 都有產生、可從 `file://` 直接開。
 
 ## 檔案結構
 - `index.html` — 頁面外殼、HUD、設定面板樣式
 - `js/main.js` — 裝置初始化、資源、相機、每幀迴圈
-- `js/audio.js` — Web Audio 合成音景（海浪、風、環境音樂、自選音樂檔），讀取 `P` 即時跟著參數變化
+- `js/audio.js` — Web Audio 合成音景（拍岸浪、退潮沙沙聲、風、海鷗、環境音樂、自選音樂檔），讀取 `P` 即時跟著參數變化
+- `js/wgsl/land.js` — 沙灘地形 `terrainH`（海面、相機高度探測、地形共用）、沙灘與岬角、海鷗
 - `js/wgsl/common.js` — 共用 struct、常數、LEAN mapping
 - `js/wgsl/sim.js` — FFT 波浪模擬與泡沫
 - `js/wgsl/sky.js` — 大氣與雲
@@ -37,12 +38,14 @@ npm run build    # 重新產生 ocean.html (~100 KB) 與 ocean.min.html (~61 KB)
 4. 功能：海岸線 SDF、船隻、天氣、錄影輸出
    - ✅ 台灣日落預設（sunElev 5, turbidity 0.4, windSpeed 6），`main.js` 的 `PRESETS`，開頁預設載入
    - ✅ 背景音效／音樂（`js/audio.js`），M 鍵切換
+   - ✅ 沙灘海灣、岬角、海鷗（`P.beach`），淺水區浪變小、沖刷、碎浪線
+   - ✅ 手機：觸控看四周、🔊⚙ 按鈕、較輕網格、動態解析度、螢幕常亮；無 WebGPU 時只播聲音
 5. 文件與部署（Vercel）
 
 ## 開發規範
 - 維持單檔可用：`ocean.html` 必須能從 `file://` 直接開
-- 壓縮版原為 61 KB，加入音效後約 66 KB；新增功能盡量精簡
-- 雲端容器的 Chromium 可用 SwiftShader 跑 WebGPU（`--enable-unsafe-webgpu --use-webgpu-adapter=swiftshader`），能測 UI 與錯誤，但 `?shot=` 截圖讀回會 device lost（原作同樣），畫面需本機確認
+- 壓縮版原為 61 KB，加入音效、沙灘、海鷗、手機支援後約 78 KB；新增功能盡量精簡
+- 雲端容器可以截到 WebGPU 畫面，但要用 headed Chromium + xvfb：`xvfb-run -a` 搭配 `headless: false` 與 `--enable-unsafe-webgpu --use-webgpu-adapter=swiftshader --no-sandbox --disable-gpu-sandbox --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog`，在 `GPUQueue.submit` 後立刻 `canvas.toDataURL()`。很慢（480x270 約 1 分鐘一幀），且軟體渲染的顏色、亮度不一定等於真實 GPU，最後仍需本機確認。headless 模式下裝置會立刻 lost
 - 使用 WGSL，不用 GLSL；以程序生成為主，避免外部貼圖與模型
 - 需要 Chrome/Edge 的 WebGPU；雲端容器沒有 GPU，視覺驗證需在本機進行
 

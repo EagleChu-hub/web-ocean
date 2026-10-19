@@ -1,6 +1,7 @@
 // Ocean surface + sky background rendering.
-import { FRAME_WGSL, ATMO_CORE_WGSL, ENV_MIPS, ENV_SIZE, N, CASCADES } from './common.js';
+import { FRAME_WGSL, ATMO_CORE_WGSL, NOISE_WGSL, ENV_MIPS, ENV_SIZE, N, CASCADES } from './common.js';
 import { SKY_RENDER_FUNCS, SKY_CLOUD_FUNCS } from './sky.js';
+import { SHORE_WGSL } from './land.js';
 
 const RENDER_BINDINGS = /* wgsl */ `
 @group(0) @binding(0) var<uniform> F: Frame;
@@ -48,7 +49,7 @@ export const OCEAN = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ 
 @group(0) @binding(9) var sampR: sampler;
 @group(0) @binding(10) var foamWorld: texture_2d_array<f32>;
 @group(0) @binding(11) var<storage, read> sunVis: array<f32, 4>;
-` + SKY_RENDER_FUNCS + /* wgsl */ `
+` + SKY_RENDER_FUNCS + SHORE_WGSL + /* wgsl */ `
 const ENV_MAXMIP: f32 = ${ENV_MIPS - 1}.0;
 const ENV_TEXELS_PER_RAD: f32 = ${ENV_SIZE}.0 / 1.5708;
 const TEX_N: f32 = ${N}.0;
@@ -58,6 +59,7 @@ struct VSOut {
   @location(0) rel: vec3f,     // displaced position relative to the camera
   @location(1) xz: vec2f,      // undisplaced (lagrangian) coordinates
   @location(2) height: f32,
+  @location(3) ground: f32,    // terrain height under this point (sea bed / beach)
 };
 
 @vertex fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VSOut {
@@ -79,12 +81,17 @@ struct VSOut {
       disp += textureSampleLevel(dispTex, sampR, xz * F.cascInvL[c >> 2u][c & 3u], c, lod).xyz;
     }
   }
+  // in the shallows the waves die down and the water runs up and down the beach instead
+  let ground = terrainH(xz);
+  disp *= shoreDamp(-ground);
+  disp.y += swash(-ground);
   var o: VSOut;
   let world = vec3f(xz.x + disp.x, disp.y, xz.y + disp.z);
   o.rel = world - F.camPos.xyz;
   o.pos = F.viewProj * vec4f(o.rel, 1.0);
   o.xz = xz;
   o.height = disp.y;
+  o.ground = ground;
   return o;
 }
 
@@ -236,6 +243,22 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   var foamMask = clamp(fm * smoothstep(0.0, 0.5, cover), 0.0, 1.0) * (0.68 + 0.32 * smoothstep(0.3, 0.9, cover));
   // freshly broken crests: dense, almost opaque core
   foamMask = max(foamMask, smoothstep(0.35, 0.9, fwl.g) * smoothstep(0.25, 0.6, pat + 0.25) * 0.95);
+  // ---- shore ----
+  // surf lines rolling in over the shallows, a foam fringe where the water meets the sand,
+  // and the sand showing through thin water
+  let depth = -in.ground;
+  let waterD = in.rel.y + F.camPos.y - in.ground;
+  var edge = 0.0;
+  if (beachOn() && depth < 8.0) {
+    let ph = shorePhase(depth);
+    let surf = smoothstep(0.72, 1.0, sin(ph)) * smoothstep(0.25, 1.0, depth) * (1.0 - smoothstep(2.5, 6.0, depth));
+    edge = 1.0 - smoothstep(0.0, 0.1 + 0.08 * max(cos(ph), 0.0), waterD);
+    cover = max(cover, surf * 0.85 + edge * 0.7);
+    let shallowFoam = smoothstep(0.2, 0.75, cover) * smoothstep(0.3, 0.8, pat + 0.15);
+    foamMask = max(foamMask, shallowFoam * 0.9);
+    let bed = vec3f(0.5, 0.46, 0.36) * (sunE * max(Ld.y, 0.0) * 0.25 + skyHemi * 0.9) + vec3f(0.0, 0.04, 0.035) * skyUp;
+    body = mix(bed, body, 1.0 - exp(-max(waterD, 0.0) / 0.9));
+  }
   // submerged bubbles brighten and tint the water just beneath foam
   body += F.sssCol.rgb * (sunE * 0.05 + ambient * 0.35) * clamp(cover, 0.0, 1.0);
   body += vec3f(0.10, 0.32, 0.30) * skyUp * fwl.g * 0.35;
@@ -261,6 +284,11 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   }
   var col = body * (1.0 - Fr) + refl * Fr + spec;
   col = mix(col, foamLit, foamMask * 0.95);
+  if (edge > 0.0) {
+    // the last millimetres of water fade into wet sand so the waterline has no hard seam
+    let wetSand = vec3f(0.32, 0.27, 0.2) * (sunE * max(Ld.y, 0.0) * 0.318 + skyHemi * 0.9);
+    col = mix(wetSand, col, smoothstep(0.0, 0.03, waterD));
+  }
 
   // ---- aerial perspective ----
   // aerial perspective: atmosphere extinction plus a marine haze floor
@@ -272,13 +300,14 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
 }
 `;
 
-// Samples the displaced surface height under the camera (inverting the horizontal
+// Samples the displaced surface height (and the terrain height) under the camera (inverting the horizontal
 // displacement with a few fixed-point iterations).
 export const HEIGHT_PROBE = FRAME_WGSL + /* wgsl */ `
 @group(0) @binding(0) var<uniform> F: Frame;
 @group(0) @binding(1) var dispTex: texture_2d_array<f32>;
 @group(0) @binding(2) var samp: sampler;
 @group(0) @binding(3) var<storage, read_write> outH: array<f32, 4>;
+` + NOISE_WGSL + SHORE_WGSL + /* wgsl */ `
 fn dispAt(xz: vec2f) -> vec3f {
   var d = vec3f(0.0);
   for (var c = 0u; c < ${CASCADES}u; c++) {
@@ -294,6 +323,8 @@ fn main() {
     let d = dispAt(x0);
     x0 = goal - d.xz;
   }
-  outH[0] = dispAt(x0).y;
+  let ground = terrainH(goal);
+  outH[0] = dispAt(x0).y * shoreDamp(-ground) + swash(-ground);
+  outH[1] = ground;
 }
 `;

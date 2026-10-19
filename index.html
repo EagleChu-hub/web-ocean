@@ -1,32 +1,53 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a1420">
 <title>Ocean — WebGPU</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
   #hud { position: fixed; left: 12px; top: 10px; font: 12px/1.45 ui-monospace, Consolas, monospace; color: #e8e2d6;
          text-shadow: 0 1px 2px #000a; pointer-events: none; user-select: none; }
+  #hud.hidden { display: none; }
   #hud .help { opacity: .7; }
-  #panel { position: fixed; right: 12px; top: 10px; width: 300px; padding: 10px 12px; border-radius: 8px;
+  #panel { position: fixed; right: 12px; top: 10px; width: 300px; max-width: calc(100vw - 48px); max-height: calc(100vh - 90px);
+           overflow-y: auto; padding: 10px 12px; border-radius: 8px;
            background: #0b0f14c8; backdrop-filter: blur(6px); color: #e5e1d8; font: 12px/1.3 system-ui, sans-serif; }
   #panel.hidden { display: none; }
   #panel label { display: grid; grid-template-columns: 1fr 110px 40px; gap: 6px; align-items: center; margin: 3px 0; }
   #panel input, #panel select { width: 110px; accent-color: #e2a04e; }
   #panel input[type=checkbox] { width: auto; justify-self: start; margin: 0; }
   #panel output { text-align: right; font-variant-numeric: tabular-nums; opacity: .8; }
+  #ctl { position: fixed; right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); display: flex; gap: 10px; }
+  #ctl button { width: 44px; height: 44px; border: 0; border-radius: 50%; background: #0b0f1499; color: #f2e8da;
+                font-size: 20px; line-height: 44px; padding: 0; backdrop-filter: blur(6px); cursor: pointer; opacity: .75; }
+  #ctl button:hover { opacity: 1; }
+  #hint { position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+          max-width: calc(100vw - 140px); padding: 8px 14px; border-radius: 18px; background: #0b0f1488; color: #f2e8da;
+          font: 14px/1.4 system-ui, sans-serif; text-align: center; pointer-events: none; transition: opacity 2s; }
+  #hint.gone { opacity: 0; }
+  #calm { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+          padding: 32px; text-align: center; color: #fff4e6; font: 17px/1.7 system-ui, sans-serif;
+          background: linear-gradient(#2a2f4a 0%, #8a5a6a 45%, #f0a066 62%, #f6c88a 66%, #2d4a5e 67%, #12222e 100%); }
+  #calm button { padding: 12px 26px; border: 0; border-radius: 26px; background: #fff4e6dd; color: #3a2a2a; font-size: 17px; }
   #err { position: fixed; inset: 0; display: none; padding: 40px; color: #f88; font: 16px system-ui; white-space: pre-wrap; background: #000; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hud">
+<div id="hud" class="hidden">
   <div id="fps">starting…</div>
   <div class="help">click: mouse look · WASD move · Space/E up · Q/C down · Shift fast · wheel speed · H panel · M sound</div>
 </div>
 <div id="panel" class="hidden"></div>
+<div id="hint"></div>
+<div id="ctl"><button id="bSound" title="聲音 (M)">🔇</button><button id="bPanel" title="設定 (H)">⚙</button></div>
+<div id="calm">
+  <div>這個瀏覽器還不能顯示 3D 海面（需要 WebGPU）。<br>沒關係，閉上眼睛，聽一會兒海浪聲。</div>
+  <button>▶ 聽海浪聲</button>
+</div>
 <div id="err"></div>
 <script type="module" src="js/main.js"></script>
 </body>

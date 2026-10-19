@@ -1,11 +1,12 @@
 // Procedural soundscape, synthesised with Web Audio so the page still needs no asset files:
-//   ocean  — open-sea wash timed to the swell period, low rumble, wind noise; all follow P
+//   ocean  — waves breaking on the beach and hissing back over the sand, timed to the swell
+//            period, low rumble, wind noise and the odd seagull; all follow P
 //   music  — 'pad': slow ambient chords with soft bells, 'file': a local file the user picks
 // Browsers only allow audio after a user gesture, so setOn(true) must come from one.
 export function createSoundscape(P) {
-  const S = { on: false, ocean: 0.7, music: 0.35, mode: 'pad' };   // mode: off | pad | file
-  let ac = null, master, oceanBus, musicBus, waveGain, waveFilter, wavePan, windGain, windFilter, rumbleGain;
-  let waveTimer = 0, padTimer = 0, bellTimer = 0, offTimer = 0, chord = 0, fileEl = null, fileSrc = null;
+  const S = { on: false, ocean: 0.9, music: 0.35, mode: 'pad' };   // mode: off | pad | file
+  let ac = null, master, oceanBus, musicBus, waveGain, waveFilter, wavePan, washGain, windGain, windFilter, rumbleGain;
+  let waveTimer = 0, gullTimer = 0, padTimer = 0, bellTimer = 0, offTimer = 0, chord = 0, fileEl = null, fileSrc = null;
 
   const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
   const rnd = (a, b) => a + Math.random() * (b - a);
@@ -49,28 +50,60 @@ export function createSoundscape(P) {
     const white = noise(4, false), brown = noise(4, true);
     waveFilter = filter('lowpass', 400, 0.3); waveGain = gainNode(0); wavePan = ac.createStereoPanner();
     wire(white, waveFilter, waveGain, wavePan, oceanBus);
+    // the thin hiss of water running back down the sand after each wave
+    washGain = gainNode(0);
+    wire(white, filter('highpass', 2200, 0.4), washGain, wavePan);
     windFilter = filter('bandpass', 500, 0.6); windGain = gainNode(0);
     wire(white, windFilter, windGain, oceanBus);
     rumbleGain = gainNode(0);
     wire(brown, filter('lowpass', 260, 0.5), rumbleGain, oceanBus);
   }
 
-  // One swell crest washing past: the noise swells and brightens, then settles.
+  // One wave reaching the beach: the roar builds and brightens as it breaks, then the
+  // backwash hisses down the sand while the roar settles.
   function wave() {
     const t = ac.currentTime;
     const period = Math.sqrt(2 * Math.PI * P.swellLength / 9.81);            // deep-water swell period
-    const amp = clamp01(0.12 + 0.1 * P.swellHs + 0.025 * P.windSpeed) * rnd(0.6, 1.0);
+    const amp = clamp01(0.2 + 0.12 * P.swellHs + 0.03 * P.windSpeed) * rnd(0.65, 1.0);
     const rise = period * rnd(0.3, 0.45), fall = period * rnd(0.5, 0.8);
-    waveGain.gain.setTargetAtTime(amp, t, rise / 3);
-    waveGain.gain.setTargetAtTime(amp * 0.15, t + rise, fall / 3);
-    waveFilter.frequency.setTargetAtTime(700 + 70 * P.windSpeed * amp, t, rise / 3);
-    waveFilter.frequency.setTargetAtTime(320, t + rise, fall / 3);
+    waveGain.gain.setTargetAtTime(amp * 1.6, t, rise / 3);
+    waveGain.gain.setTargetAtTime(amp * 0.25, t + rise, fall / 3);
+    waveFilter.frequency.setTargetAtTime(900 + 80 * P.windSpeed * amp, t, rise / 3);
+    waveFilter.frequency.setTargetAtTime(340, t + rise, fall / 3);
+    washGain.gain.setTargetAtTime(0, t, 0.3);
+    washGain.gain.setTargetAtTime(amp * 0.22, t + rise * 1.1, 0.4);
+    washGain.gain.setTargetAtTime(0, t + rise * 1.1 + fall * 0.5, fall / 4);
     wavePan.pan.setTargetAtTime(rnd(-0.5, 0.5), t, period / 3);
     // wind and rumble only need to follow the sliders, so they ride along with the waves
     windGain.gain.setTargetAtTime(Math.min(0.35, 0.0016 * P.windSpeed * P.windSpeed) * rnd(0.6, 1.2), t, 1.5);
     windFilter.frequency.setTargetAtTime((300 + 45 * P.windSpeed) * rnd(0.8, 1.25), t, 2);
     rumbleGain.gain.setTargetAtTime(0.06 + 0.03 * P.swellHs, t, 2);
     waveTimer = setTimeout(wave, period * rnd(0.55, 0.95) * 1000);
+  }
+
+  // A seagull a little way off: a few falling "kee-ow" calls, each a buzzy sawtooth through
+  // two vocal-tract-like resonances.
+  function gull() {
+    const calls = 2 + Math.floor(Math.random() * 4), pan = ac.createStereoPanner(), out = gainNode(rnd(0.08, 0.16));
+    pan.pan.value = rnd(-0.8, 0.8);
+    wire(out, pan, oceanBus);
+    let t = ac.currentTime + 0.05;
+    const f0 = rnd(1300, 1700);
+    for (let i = 0; i < calls; i++) {
+      const len = rnd(0.22, 0.4), f = f0 * (1 - 0.05 * i);
+      const o = ac.createOscillator(), env = gainNode(0);
+      const b1 = filter('bandpass', 1900, 4), b2 = filter('bandpass', 3400, 5);
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(f * 0.85, t);
+      o.frequency.linearRampToValueAtTime(f * 1.12, t + len * 0.25);
+      o.frequency.exponentialRampToValueAtTime(f * 0.62, t + len);
+      wire(o, b1, env, out); wire(o, b2, env);
+      env.gain.setTargetAtTime(1, t, 0.015);
+      env.gain.setTargetAtTime(0, t + len * 0.7, 0.05);
+      o.start(t); o.stop(t + len + 0.4);
+      t += len + rnd(0.08, 0.25);
+    }
+    gullTimer = setTimeout(gull, rnd(9, 24) * 1000);
   }
 
   // Fmaj7 · Cadd9 · Am7 · Gsus2, bass note first; one chord every 14 s with long crossfades
@@ -123,12 +156,12 @@ export function createSoundscape(P) {
       if (!ac) build();
       ac.resume();
       master.gain.setTargetAtTime(1, ac.currentTime, 0.8);
-      if (!waveTimer) wave();
+      if (!waveTimer) { wave(); gullTimer = setTimeout(gull, 3000); }
       startMusic();
     } else if (ac) {
       master.gain.setTargetAtTime(0, ac.currentTime, 0.3);
       offTimer = setTimeout(() => {
-        clearTimeout(waveTimer); waveTimer = 0;
+        clearTimeout(waveTimer); clearTimeout(gullTimer); waveTimer = gullTimer = 0;
         stopMusic();
         ac.suspend();
       }, 1500);

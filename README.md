@@ -36,11 +36,17 @@ After editing anything under `js/`, run `npm run build` to regenerate both bundl
 | H | Settings panel: preset, wind, swell, choppiness, turbidity, foam, sun, haze, clouds, exposure, bloom, sound |
 | M | Sound on / off |
 
-### Presets and sound
+On phones and tablets: drag with one finger to look around, tap once to start the sound. The 🔊 and ⚙ buttons in the corner toggle sound and the settings panel on every device.
 
-The page opens on the **Taiwan sunset** preset (sun 5° up, wind 6 m/s, clearer deep-blue water). Pick **Original** in the panel, or open with `?preset=original`, for the upstream look.
+### Presets, beach and sound
 
-Sound starts with your first click or key press (browsers block audio before that). It is synthesised live with Web Audio, so there are still no asset files: an open-sea wash timed to the swell period, wind that follows the wind slider, and an optional ambient pad with soft bells. **Music → My music file** plays any local audio file on loop instead. `?sound=0` keeps the page silent.
+The page opens on the **Taiwan sunset** preset: you stand on a sandy cove at sunset (sun 5° up, wind 6 m/s, clearer deep-blue water), with a headland on each side and seagulls gliding overhead. Near the beach the waves die down, the water runs up and back down the sand, and surf lines roll in. Pick **Original** in the panel, or open with `?preset=original`, for the upstream open-ocean look; the **Beach & gulls** slider switches the cove on its own.
+
+Sound starts with your first click, tap or key press (browsers block audio before that). It is synthesised live with Web Audio, so there are still no asset files: waves breaking on the beach timed to the swell period, the hiss of the backwash, wind that follows the wind slider, the odd seagull, and an optional ambient pad with soft bells. **Music → My music file** plays any local audio file on loop instead. `?sound=0` keeps the page silent.
+
+### Phones and browsers without WebGPU
+
+On phones the mesh is lighter and the render resolution starts at 75% with the pixel ratio capped at 2; on every device the resolution then adapts between 50% and 100% to hold the frame rate. The screen is kept awake while the page is open. Where WebGPU is not available the page shows a quiet sunset screen with a button that plays the soundscape on its own.
 
 The camera keeps itself above the displaced water surface, so waves never pass through it.
 

@@ -7,13 +7,17 @@ import { SIM_INIT, SIM_EVOLVE, FFT_ROWS, FFT_COLS, SIM_MIPS, FOAM_TEX, RGBA8_MIP
 import { TRANS_LUT, MS_LUT, SKYVIEW_LUT, ENV_CUBE, CUBE_MIPS, SUN_VIS } from './wgsl/sky.js';
 import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
+import { LAND, LAND_RINGS, LAND_SEGS, GULLS, GULL_COUNT, GULL_VERTS } from './wgsl/land.js';
 import { createSoundscape } from './audio.js';
 
 const qs = new URLSearchParams(location.search);
 const DBG = Number(qs.get('dbg')) || 0;
 const D2R = Math.PI / 180;
-const GU = GPUBufferUsage;
-const TU = GPUTextureUsage;
+const GU = globalThis.GPUBufferUsage;
+const TU = globalThis.GPUTextureUsage;
+// Phones and tablets get a lighter mesh, touch controls and a capped render resolution.
+const TOUCH = matchMedia('(pointer: coarse)').matches;
+const MOBILE = TOUCH || !!(navigator.userAgentData && navigator.userAgentData.mobile);
 
 // ----------------------------------------------------------------------------------------
 // Tunable parameters (UI panel edits these)
@@ -36,11 +40,12 @@ export const P = {
   clouds: 0.40,
   veil: 0.36,
   bloom: 0.10,
+  beach: 0,            // sandy cove with headlands and seagulls
 };
 // Named starting points for P (?preset=original picks the upstream look). The first one loads
 // by default; the panel's preset menu switches between them.
 const PRESETS = {
-  'Taiwan sunset': { ...P, sunElev: 5, turbidity: 0.4, windSpeed: 6 },
+  'Taiwan sunset': { ...P, sunElev: 5, turbidity: 0.4, windSpeed: 6, beach: 1 },
   'Original': { ...P },
 };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
@@ -70,14 +75,31 @@ function mat4Mul(out, a, b) {
   }
 }
 
+// Without WebGPU there is no sea to look at, but the sound still works: show a quiet sunset
+// screen with a button that starts it.
+function soundOnly() {
+  const el = document.getElementById('calm');
+  el.style.display = 'flex';
+  document.getElementById('hud').style.display = 'none';
+  document.getElementById('ctl').style.display = 'none';
+  const sound = createSoundscape({ ...PRESETS['Taiwan sunset'] });
+  const btn = el.querySelector('button');
+  btn.addEventListener('click', () => {
+    sound.toggle();
+    btn.textContent = sound.on ? '❚❚ 暫停' : '▶ 聽海浪聲';
+  });
+  log('no WebGPU: sound-only mode');
+}
+
 async function main() {
-  if (!navigator.gpu) fail('WebGPU is not available in this browser.');
+  if (!navigator.gpu) return soundOnly();
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-  if (!adapter) fail('No WebGPU adapter found.');
+  if (!adapter) return soundOnly();
   const hasTS = adapter.features.has('timestamp-query');
   const device = await adapter.requestDevice({
     requiredFeatures: hasTS ? ['timestamp-query'] : [],
-  });
+  }).catch(() => null);
+  if (!device) return soundOnly();
   device.lost.then((i) => log('device lost: ' + i.message));
   device.onuncapturederror = (e) => log('GPU error: ' + e.error.message);
 
@@ -299,23 +321,53 @@ async function main() {
     fullArr(foamW[i]), { buffer: sunVisBuf }], 'ocean' + i));
   const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp], 'sky');
 
+  // Beach terrain (camera-centred polar grid) and seagulls, drawn into the main pass.
+  const [landMod, gullMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls')]);
+  const solidPipe = (module, label) => device.createRenderPipelineAsync({
+    label, layout: 'auto',
+    vertex: { module, entryPoint: 'vs' },
+    fragment: { module, entryPoint: 'fs', targets: [{ format: HDR }] },
+    primitive: { topology: 'triangle-list', cullMode: 'none' },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
+    multisample: { count: MSAA },
+  });
+  const [landPipe, gullPipe] = await Promise.all([solidPipe(landMod, 'land'), solidPipe(gullMod, 'gulls')]);
+  const landRes = [{ buffer: frameUBO }, transView, skyView, sampClamp, envCubeView, { buffer: sunVisBuf }];
+  const bgLand = bg(landPipe, landRes, 'land');
+  const bgGulls = bg(gullPipe, landRes, 'gulls');
+  const landIdx = new Uint16Array(LAND_RINGS * LAND_SEGS * 6);
+  {
+    let k = 0;
+    const row = LAND_SEGS + 1;
+    for (let r = 0; r < LAND_RINGS; r++) {
+      for (let s = 0; s < LAND_SEGS; s++) {
+        const a = r * row + s, b = a + 1, c = a + row, d = c + 1;
+        landIdx[k++] = a; landIdx[k++] = c; landIdx[k++] = d;
+        landIdx[k++] = a; landIdx[k++] = d; landIdx[k++] = b;
+      }
+    }
+  }
+  const landIdxBuf = mkBuf(landIdx.byteLength, GU.INDEX | GU.COPY_DST, 'land idx');
+  device.queue.writeBuffer(landIdxBuf, 0, landIdx);
+
   // Water height under the camera (async readback, a few frames of latency) so the
   // floating camera rides above passing crests instead of clipping into them.
   const probePipe = await computePipe(HEIGHT_PROBE, 'height probe');
   const probeOut = mkBuf(16, GU.STORAGE | GU.COPY_SRC, 'probe out');
   const probeRead = mkBuf(16, GU.MAP_READ | GU.COPY_DST, 'probe read');
   const bgProbe = bg(probePipe, [{ buffer: frameUBO }, fullArr(dispTex), samplerSim, { buffer: probeOut }], 'probe');
-  let probePending = false, waterH = 0;
+  let probePending = false, waterH = 0, groundH = -1e4;
   const onProbe = () => {
-    waterH = new Float32Array(probeRead.getMappedRange(0, 16))[0];
+    const h = new Float32Array(probeRead.getMappedRange(0, 16));
+    waterH = h[0]; groundH = h[1];
     probeRead.unmap();
     probePending = false;
   };
   const onProbeFail = () => { probePending = false; };
 
   // CDLOD grid mesh
-  const GRID = 32;
-  const LEAF = 2.0;           // finest node size (m) -> 6.25 cm vertex spacing
+  const GRID = MOBILE ? 16 : 32;
+  const LEAF = 2.0;           // finest node size (m) -> 6.25 cm vertex spacing (12.5 cm on phones)
   const R0 = 8 * LEAF;        // LOD 0 range
   const LODS = 17;
   const MAX_DIST = 160000;
@@ -346,6 +398,10 @@ async function main() {
   const bloomUBOs = [];
   for (let i = 0; i < BLOOM_LEVELS * 2; i++) bloomUBOs.push(mkBuf(16, GU.UNIFORM | GU.COPY_DST, 'bloom ubo'));
 
+  // Render scale: phones start lower and cap the pixel ratio; every device adapts it to keep
+  // the frame rate up (see adaptScale). ?w=&h= forces an exact size instead.
+  const maxScale = MOBILE ? 0.75 : 1;
+  let rscale = maxScale;
   let W = 0, H = 0;
   let colorMS, depthMS, hdrTex, bloomTex;
   const mainPass = {
@@ -360,7 +416,7 @@ async function main() {
 
   function resize() {
     const fw = Number(qs.get('w')) || 0, fh = Number(qs.get('h')) || 0;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, MOBILE ? 2 : 3) * rscale;
     const w = fw || Math.max(1, Math.round(canvas.clientWidth * dpr));
     const h = fh || Math.max(1, Math.round(canvas.clientHeight * dpr));
     if (w === W && h === H) return;
@@ -463,7 +519,22 @@ async function main() {
   });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
   addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
-  canvas.addEventListener('click', () => { if (document.pointerLockElement !== canvas) canvas.requestPointerLock(); });
+  canvas.addEventListener('click', () => {
+    if (!TOUCH && document.pointerLockElement !== canvas) canvas.requestPointerLock();
+  });
+  // touch: drag with one finger to look around
+  let touchId = null, touchX = 0, touchY = 0;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    touchId = e.pointerId; touchX = e.clientX; touchY = e.clientY;
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== touchId) return;
+    cam.yaw -= (e.clientX - touchX) * 0.004;
+    cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch + (e.clientY - touchY) * 0.004));
+    touchX = e.clientX; touchY = e.clientY;
+  });
+  for (const ev of ['pointerup', 'pointercancel']) canvas.addEventListener(ev, (e) => { if (e.pointerId === touchId) touchId = null; });
   let dragging = false;
   canvas.addEventListener('mousedown', (e) => { if (e.button === 2) dragging = true; });
   addEventListener('mouseup', () => { dragging = false; });
@@ -493,6 +564,8 @@ async function main() {
     cam.y = Math.max(1.0, Math.min(3000, cam.y));
     // keep clear of the actual (displaced) water surface under the camera
     if (cam.y < waterH + 0.9) cam.y += (waterH + 0.9 - cam.y) * Math.min(1, dt * 12);
+    // and stand on the beach at eye height rather than sinking into it
+    if (cam.y < groundH + 1.6) cam.y += (groundH + 1.6 - cam.y) * Math.min(1, dt * 12);
   }
 
   // --------------------------------------------------------------------------------------
@@ -595,6 +668,8 @@ async function main() {
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
     f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed;
+    // shore: swell angular frequency, swash amplitude (m), beach on/off
+    f[60] = Math.sqrt(9.81 * 2 * Math.PI / P.swellLength); f[61] = 0.1 + 0.06 * P.swellHs; f[62] = P.beach;
     f[64] = R0; f[65] = GRID; f[66] = FOAM_LEVEL_SIZE[0]; f[67] = FOAM_LEVEL_SIZE[1];
     f[68] = P.exposure; f[69] = P.bloom; f[70] = frameIndex; f[71] = DBG;
     f[72] = P.haze; f[73] = Math.max(cam.y, 10) * 0.001; f[74] = P.veil; f[75] = 0.9;
@@ -614,7 +689,10 @@ async function main() {
   // UI
   // --------------------------------------------------------------------------------------
   const panel = document.getElementById('panel');
-  function togglePanel() { panel.classList.toggle('hidden'); }
+  const hud = document.getElementById('hud');
+  // the stats HUD only shows with the panel, so the view stays calm
+  function togglePanel() { hud.classList.toggle('hidden', panel.classList.toggle('hidden')); }
+  document.getElementById('bPanel').addEventListener('click', togglePanel);
   function row(label, ...els) {
     const r = document.createElement('label');
     const name = document.createElement('span'); name.textContent = label;
@@ -659,6 +737,7 @@ async function main() {
     ['veil', 'Cloud deck', 0, 1, 0.01, ''],
     ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
     ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
+    ['beach', 'Beach & gulls', 0, 1, 1, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const val = document.createElement('output');
@@ -673,7 +752,10 @@ async function main() {
     row(label, inp, val);
     sliderEls.push([key, inp, val]);
   }
-  if (qs.get('ui') === '0') { document.getElementById('hud').style.display = 'none'; panel.classList.add('hidden'); }
+  if (qs.get('ui') === '0') {
+    for (const id of ['hud', 'ctl', 'hint']) document.getElementById(id).style.display = 'none';
+    panel.classList.add('hidden');
+  }
   applyPreset(preset);
   for (const k of Object.keys(P)) if (qs.has(k)) P[k] = Number(qs.get(k));
   syncSliders();
@@ -702,20 +784,36 @@ async function main() {
     inp.addEventListener('input', () => { set(Number(inp.value)); val.textContent = inp.value; });
     return [inp, val];
   }
-  function syncSound() { soundBox.checked = sound.on; musicSel.value = sound.mode; }
+  const bSound = document.getElementById('bSound');
+  bSound.addEventListener('click', () => { sound.toggle(); syncSound(); });
+  function syncSound() {
+    soundBox.checked = sound.on; musicSel.value = sound.mode;
+    bSound.textContent = sound.on ? '🔊' : '🔇';
+  }
   row('Sound (M)', soundBox);
-  row('Ocean volume', ...volume(0.7, sound.setOcean));
+  row('Ocean volume', ...volume(0.9, sound.setOcean));
   row('Music', musicSel, musicFile);
   row('Music volume', ...volume(0.35, sound.setMusic));
-  if (qs.get('sound') !== '0') {
-    const firstGesture = () => {
-      removeEventListener('pointerdown', firstGesture);
-      removeEventListener('keydown', firstGesture);
-      if (!sound.on) { sound.setOn(true); syncSound(); }
-    };
-    addEventListener('pointerdown', firstGesture);
-    addEventListener('keydown', firstGesture);
-  }
+  // First touch, click or key: start the sound (unless that touch was the sound button
+  // itself), fade the hint, and keep the screen awake while the page is open.
+  const hint = document.getElementById('hint');
+  hint.textContent = TOUCH ? '輕點畫面，聽海浪聲 · 手指拖曳看四周' : '點一下畫面開始 · 滑鼠看四周 · WASD 移動 · H 設定 · M 聲音';
+  setTimeout(() => hint.classList.add('gone'), 9000);
+  let wakeLock = null;
+  const keepAwake = () => {
+    if (wakeLock || !navigator.wakeLock || document.visibilityState !== 'visible') return;
+    navigator.wakeLock.request('screen').then((l) => { wakeLock = l; l.addEventListener('release', () => { wakeLock = null; }); }, () => {});
+  };
+  document.addEventListener('visibilitychange', keepAwake);
+  const firstGesture = (e) => {
+    removeEventListener('pointerdown', firstGesture);
+    removeEventListener('keydown', firstGesture);
+    hint.classList.add('gone');
+    keepAwake();
+    if (qs.get('sound') !== '0' && !sound.on && e.target !== bSound) { sound.setOn(true); syncSound(); }
+  };
+  addEventListener('pointerdown', firstGesture);
+  addEventListener('keydown', firstGesture);
 
   const hudFps = document.getElementById('fps');
 
@@ -782,6 +880,16 @@ async function main() {
     device.queue.writeBuffer(foamUBO, 0, foamUArr);
   }
 
+  // Lower the render scale when the frame rate sags, raise it again when there is headroom.
+  let scaleT = 0;
+  function adaptScale(fps, now) {
+    if (qs.get('w') || now - scaleT < 2000 || frameIndex < 120) return;
+    let s = rscale;
+    if (fps < 40) s = Math.max(0.5, rscale * 0.85);
+    else if (fps > 55) s = Math.min(maxScale, rscale * 1.1);
+    if (Math.abs(s - rscale) > 0.01) { rscale = s; scaleT = now; }
+  }
+
   function frame(now) {
     if (shooting) return;  // paused while a screenshot is read back
     requestAnimationFrame(frame);
@@ -791,6 +899,7 @@ async function main() {
     fpsAcc += dt; fpsN++; fpsT += dt;
     if (fpsT > 0.5) {
       const fps = fpsN / fpsAcc;
+      adaptScale(fps, now);
       hudFps.textContent = `${fps.toFixed(0)} fps  ${(1000 / fps).toFixed(2)} ms` +
         (hasTS ? `  |  GPU ${gpuMs.toFixed(2)} ms` : '') + `  |  ${nodeCount} nodes  ${W}x${H}`;
       fpsAcc = 0; fpsN = 0; fpsT = 0;
@@ -858,6 +967,15 @@ async function main() {
       rp.setVertexBuffer(0, instBuf);
       rp.setIndexBuffer(idxBuf, 'uint16');
       rp.drawIndexed(GRID * GRID * 6, nodeCount);
+    }
+    if (P.beach) {
+      rp.setPipeline(landPipe);
+      rp.setBindGroup(0, bgLand);
+      rp.setIndexBuffer(landIdxBuf, 'uint16');
+      rp.drawIndexed(landIdx.length);
+      rp.setPipeline(gullPipe);
+      rp.setBindGroup(0, bgGulls);
+      rp.draw(GULL_VERTS, GULL_COUNT);
     }
     rp.setPipeline(skyPipe);
     rp.setBindGroup(0, bgSky);
