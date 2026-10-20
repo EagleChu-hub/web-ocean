@@ -821,8 +821,8 @@ async function main() {
   applyPreset(preset);
   for (const k of Object.keys(P)) if (qs.has(k)) P[k] = Number(qs.get(k));
   syncSliders();
-  // with the beach on, start sitting further up the sand so the palms and the bay are in view
-  if (P.beach && !qs.get('cam')) { cam.z = 22; cam.y = 2.85; cam.pitch = -2.5 * D2R; }
+  // with the beach on, start sitting on the sand ~19 m from the water, palms on either side
+  if (P.beach && !qs.get('cam')) { cam.z = 5; cam.y = 2.1; cam.pitch = -2.5 * D2R; }
 
   // Sound: off until the first click or key press, because browsers block audio before a user
   // gesture. ?sound=0 keeps it off; M toggles it.
