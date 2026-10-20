@@ -3,7 +3,7 @@
 //   LAND        sand beach, dunes and the two headlands of the cove
 //   GULLS       a few seagulls gliding and flapping over the beach
 //   PALMS       coconut palms along both sides of the beach, swaying in the wind
-//   LIGHTHOUSE  a lighthouse on the left headland with a rotating beam (BEAM entry points)
+//   LIGHTHOUSE  a lighthouse on a rocky islet in the bay with a rotating beam (BEAM entry points)
 //   CRABS       little crabs scuttling sideways across the sand
 import { FRAME_WGSL, ATMO_CORE_WGSL, ENV_MIPS } from './common.js';
 import { SKY_RENDER_FUNCS } from './sky.js';
@@ -14,6 +14,8 @@ import { SKY_RENDER_FUNCS } from './sky.js';
 // beach on/off, -). Requires NOISE_WGSL (gnoise) and F.
 export const SHORE_WGSL = /* wgsl */ `
 const SHORE_Z: f32 = -14.0;
+// slightly left of the sunset and narrow enough in angle to stay in a phone's portrait view
+const ISLET: vec2f = vec2f(-110.0, -480.0);
 const BEACH_SLOPE: f32 = 0.045;
 
 fn beachOn() -> bool { return F.windP[1].z > 0.5; }
@@ -33,7 +35,10 @@ fn terrainH(p: vec2f) -> f32 {
   h += smoothstep(40.0, 160.0, u) * (3.0 + 2.0 * gnoise(p * 0.02));            // dunes
   let hill = reach * smoothstep(-60.0, 120.0, u) *
     (55.0 + 25.0 * gnoise(p * 0.004) + 6.0 * gnoise(p * 0.03));
-  return h + hill;
+  // a small rocky islet out in the bay, with the lighthouse on top
+  let di = distance(p, ISLET);
+  let islet = 29.0 * smoothstep(62.0, 12.0, di) * (0.9 + 0.1 * gnoise(p * 0.08)) + 4.0 * gnoise(p * 0.15) * smoothstep(62.0, 30.0, di) - 16.5;
+  return max(h + hill, islet);
 }
 
 // Waves shrink as the water gets shallow, so the sea meets the sand calmly.
@@ -436,7 +441,7 @@ struct VO {
 }
 `;
 
-// A lighthouse near the tip of the left headland: a tapered white tower with red bands, a
+// A lighthouse on the islet in the bay: a tapered white tower with red bands, a
 // railed gallery, a glowing lantern and a dark cap, plus a keeper's house at its foot. The
 // lantern flashes whenever the rotating beam sweeps past the camera; BEAM is the beam itself,
 // drawn additively after the sky.
@@ -448,11 +453,7 @@ const LH_COMMON = /* wgsl */ `
 const QUAD = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0));
 const LH_H: f32 = 21.0;
 const LH_S: f32 = 1.35;        // overall scale, so it reads from across the bay
-fn lhBase() -> vec3f {
-  let x = -255.0;
-  let z = shoreZ(x) + 28.0;
-  return vec3f(x, terrainH(vec2f(x, z)) - 0.5, z);
-}
+fn lhBase() -> vec3f { return vec3f(ISLET.x, terrainH(ISLET) - 0.5, ISLET.y); }
 fn lampPos() -> vec3f { return lhBase() + vec3f(0.0, (LH_H + 1.4) * LH_S, 0.0); }
 // horizontal direction of the beam; one turn every 12 s
 fn beamDir() -> vec3f { let a = F.camPos.w * 0.5236; return vec3f(cos(a), 0.0, sin(a)); }
