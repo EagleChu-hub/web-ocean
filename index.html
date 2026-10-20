@@ -16,8 +16,8 @@
            overflow-y: auto; padding: 10px 12px; border-radius: 8px;
            background: #0b0f14c8; backdrop-filter: blur(6px); color: #e5e1d8; font: 12px/1.3 system-ui, sans-serif; }
   #panel.hidden { display: none; }
-  #panel label { display: grid; grid-template-columns: 1fr 110px 40px; gap: 6px; align-items: center; margin: 3px 0; }
-  #panel input, #panel select { width: 110px; accent-color: #e2a04e; }
+  #panel label { display: grid; grid-template-columns: 1fr 120px 40px; gap: 6px; align-items: center; margin: 3px 0; }
+  #panel input, #panel select { width: 120px; accent-color: #e2a04e; }
   #panel input[type=checkbox] { width: auto; justify-self: start; margin: 0; }
   #panel output { text-align: right; font-variant-numeric: tabular-nums; opacity: .8; }
   #ctl { position: fixed; right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); display: flex; gap: 10px; }
@@ -38,8 +38,8 @@
 <body>
 <canvas id="c"></canvas>
 <div id="hud" class="hidden">
-  <div id="fps">starting…</div>
-  <div class="help">click: mouse look · WASD move · Space/E up · Q/C down · Shift fast · wheel speed · H panel · M sound</div>
+  <div id="fps">啟動中…</div>
+  <div class="help">點畫面：滑鼠看四周 · WASD 移動 · 空白鍵/E 上 · Q/C 下 · Shift 加速 · 滾輪調速 · H 設定 · M 聲音</div>
 </div>
 <div id="panel" class="hidden"></div>
 <div id="hint"></div>

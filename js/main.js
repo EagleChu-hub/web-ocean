@@ -772,8 +772,9 @@ async function main() {
   const presetNames = Object.keys(PRESETS);
   const qsPreset = (qs.get('preset') || '').toLowerCase();
   let preset = presetNames.find((n) => n.toLowerCase().startsWith(qsPreset) && qsPreset) || presetNames[0];
-  const presetSel = select(presetNames, preset, (name) => { applyPreset(name); syncSliders(); });
-  row('Preset', presetSel);
+  const PRESET_LABELS = { 'Taiwan sunset': '台灣夕陽沙灘', 'Original': '原版開闊海面' };
+  const presetSel = select(presetNames.map((n) => [n, PRESET_LABELS[n] || n]), preset, (name) => { applyPreset(name); syncSliders(); });
+  row('場景', presetSel);
   function applyPreset(name) {
     preset = name;
     Object.assign(P, PRESETS[name]);
@@ -783,23 +784,23 @@ async function main() {
   const sliderEls = [];
   function syncSliders() { for (const [key, inp, val] of sliderEls) { inp.value = P[key]; val.textContent = String(P[key]); } }
   const SLIDERS = [
-    ['windSpeed', 'Wind speed (m/s)', 2, 20, 0.1, 'spec'],
-    ['windDir', 'Wind direction (deg)', 0, 360, 1, 'spec'],
-    ['fetchKm', 'Fetch (km)', 5, 800, 1, 'spec'],
-    ['swellHs', 'Swell height (m)', 0, 4, 0.05, 'spec'],
-    ['swellLength', 'Swell wavelength (m)', 30, 300, 1, 'spec'],
-    ['swellDir', 'Swell direction (deg)', 0, 360, 1, 'spec'],
-    ['choppy', 'Choppiness', 0, 1.6, 0.01, 'spec'],
-    ['turbidity', 'Water turbidity', 0.2, 3, 0.01, ''],
-    ['foam', 'Foam', 0, 3, 0.01, ''],
-    ['sunElev', 'Sun elevation (deg)', -2, 60, 0.1, ''],
-    ['sunAzim', 'Sun azimuth (deg)', -180, 180, 0.5, ''],
-    ['haze', 'Haze', 0.5, 15, 0.1, 'lut'],
-    ['clouds', 'Low clouds', 0, 1, 0.01, ''],
-    ['veil', 'Cloud deck', 0, 1, 0.01, ''],
-    ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
-    ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
-    ['beach', 'Beach & gulls', 0, 1, 1, ''],
+    ['windSpeed', '風速 (m/s)', 2, 20, 0.1, 'spec'],
+    ['windDir', '風向 (度)', 0, 360, 1, 'spec'],
+    ['fetchKm', '風吹距離 (km)', 5, 800, 1, 'spec'],
+    ['swellHs', '湧浪高度 (m)', 0, 4, 0.05, 'spec'],
+    ['swellLength', '湧浪波長 (m)', 30, 300, 1, 'spec'],
+    ['swellDir', '湧浪方向 (度)', 0, 360, 1, 'spec'],
+    ['choppy', '浪尖銳度', 0, 1.6, 0.01, 'spec'],
+    ['turbidity', '海水混濁度', 0.2, 3, 0.01, ''],
+    ['foam', '浪花泡沫', 0, 3, 0.01, ''],
+    ['sunElev', '太陽高度 (度)', -2, 60, 0.1, ''],
+    ['sunAzim', '太陽方位 (度)', -180, 180, 0.5, ''],
+    ['haze', '霧氣', 0.5, 15, 0.1, 'lut'],
+    ['clouds', '低空雲量', 0, 1, 0.01, ''],
+    ['veil', '高空雲層', 0, 1, 0.01, ''],
+    ['exposure', '亮度', 0.1, 4, 0.01, ''],
+    ['bloom', '光暈', 0, 0.3, 0.001, ''],
+    ['beach', '沙灘與景物', 0, 1, 1, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const val = document.createElement('output');
@@ -830,7 +831,7 @@ async function main() {
   const soundBox = document.createElement('input');
   soundBox.type = 'checkbox';
   soundBox.addEventListener('change', () => sound.setOn(soundBox.checked));
-  const musicSel = select([['pad', 'Ambient'], ['file', 'My music file'], ['off', 'Off']], sound.mode, (m) => {
+  const musicSel = select([['pad', '環境音樂'], ['file', '我的音樂檔'], ['off', '關閉']], sound.mode, (m) => {
     if (m === 'file' && !musicFile.files.length) { musicFile.click(); return; }
     sound.setMode(m);
   });
@@ -854,10 +855,10 @@ async function main() {
     soundBox.checked = sound.on; musicSel.value = sound.mode;
     bSound.textContent = sound.on ? '🔊' : '🔇';
   }
-  row('Sound (M)', soundBox);
-  row('Ocean volume', ...volume(0.9, sound.setOcean));
-  row('Music', musicSel, musicFile);
-  row('Music volume', ...volume(0.35, sound.setMusic));
+  row('聲音 (M)', soundBox);
+  row('海浪音量', ...volume(0.9, sound.setOcean));
+  row('音樂', musicSel, musicFile);
+  row('音樂音量', ...volume(0.35, sound.setMusic));
   // First touch, click or key: start the sound (unless that touch was the sound button
   // itself), fade the hint, and keep the screen awake while the page is open.
   const hint = document.getElementById('hint');
