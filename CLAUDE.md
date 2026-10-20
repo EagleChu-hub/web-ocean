@@ -12,7 +12,7 @@
 ```bash
 npm install
 npm start        # http://localhost:8080/
-npm run build    # 重新產生 ocean.html (~155 KB) 與 ocean.min.html (~92 KB)
+npm run build    # 重新產生 ocean.html 與 ocean.min.html（含內嵌照片材質，各約 1.3 MB）
 ```
 修改 `js/` 下任何檔案後都要 `npm run build`，並確認兩個 bundle 都有產生、可從 `file://` 直接開。
 
@@ -20,13 +20,16 @@ npm run build    # 重新產生 ocean.html (~155 KB) 與 ocean.min.html (~92 KB)
 - `index.html` — 頁面外殼、HUD、設定面板樣式
 - `js/main.js` — 裝置初始化、資源、相機、每幀迴圈
 - `js/audio.js` — Web Audio 合成音景（拍岸浪、退潮沙沙聲、風、海鷗、環境音樂、自選音樂檔），讀取 `P` 即時跟著參數變化
-- `js/wgsl/land.js` — 沙灘地形 `terrainH`/`shoreZ`（海面、相機高度探測、地形共用）、沙灘細節（沙紋、海草線、貝殼、海星、卵石、一大一小腳印）、岬角、椰子樹（vertex shader 程序生成，alpha-to-coverage 葉片）、燈塔（旋轉光束用加法混合，畫在天空之後）、小螃蟹、海鷗
+- `js/wgsl/land.js` — 沙灘地形 `terrainH`/`shoreZ`（海面、相機高度探測、地形共用）、沙灘細節（沙紋、海草線、貝殼、海星、卵石、一大一小腳印）、岬角、椰子樹（照片 billboard，面向鏡頭、依位置翻轉朝中間傾斜、alpha-to-coverage）、燈塔（旋轉光束用加法混合，畫在天空之後）、小螃蟹、海鷗
 - `js/wgsl/common.js` — 共用 struct、常數、LEAN mapping
 - `js/wgsl/sim.js` — FFT 波浪模擬與泡沫
 - `js/wgsl/sky.js` — 大氣與雲
 - `js/wgsl/ocean.js` — 海面與天空 pass
 - `js/wgsl/post.js` — bloom 與 tone mapping
-- `build.mjs` — 打包成單檔 ocean.html / ocean.min.html
+- `js/assets.js` — 照片材質的路徑與量測資料（由 `tools/prepare_assets.py` 產生，勿手改）
+- `assets/*.webp` — 照片材質：沙（乾/濕）、貝殼圖集、4 棵椰子樹（使用者用 GPT/Gemini 生成，綠幕去背）
+- `tools/prepare_assets.py` — 處理原圖：沙做無縫、綠幕去背、貝殼切圖打包、椰子樹對齊樹根。原圖不進 repo，要換圖就重跑此腳本
+- `build.mjs` — 打包成單檔 ocean.html / ocean.min.html（把 assets/*.webp 內嵌成 data URL）
 - `server.mjs` — 小型靜態伺服器
 
 操作方式、URL 參數、技術細節請以 `README.md` 為準。
@@ -45,9 +48,9 @@ npm run build    # 重新產生 ocean.html (~155 KB) 與 ocean.min.html (~92 KB)
 
 ## 開發規範
 - 維持單檔可用：`ocean.html` 必須能從 `file://` 直接開
-- 壓縮版原為 61 KB，加入音效、沙灘、椰子樹、海鷗、手機支援後約 92 KB；新增功能盡量精簡
+- 壓縮版原為 61 KB；程式部分約 92 KB，另含約 1.2 MB 照片材質（使用者選擇以真實感優先）。新增功能盡量精簡
 - 雲端容器可以截到 WebGPU 畫面，但要用 headed Chromium + xvfb：`xvfb-run -a` 搭配 `headless: false` 與 `--enable-unsafe-webgpu --use-webgpu-adapter=swiftshader --no-sandbox --disable-gpu-sandbox --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog`，在 `GPUQueue.submit` 後立刻 `canvas.toDataURL()`。很慢（640x360 約 4 分鐘出圖）。太陽高時截圖會偏白過曝，用 `sunElev=1.5&exposure=0.6` 顏色較接近真實，且軟體渲染的顏色、亮度不一定等於真實 GPU，最後仍需本機確認。headless 模式下裝置會立刻 lost
-- 使用 WGSL，不用 GLSL；以程序生成為主，避免外部貼圖與模型
+- 使用 WGSL，不用 GLSL；以程序生成為主。照片材質只用於程序做不像的東西（沙、貝殼、椰子樹），一律放 assets/ 並經 prepare_assets.py 處理
 - 需要 Chrome/Edge 的 WebGPU；雲端容器沒有 GPU，視覺驗證需在本機進行
 
 ## 交接檔的已知誤差

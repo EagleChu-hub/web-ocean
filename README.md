@@ -12,7 +12,7 @@ A real-time ocean renderer written from scratch on WebGPU, with no engine or ren
 
 You need a recent Chrome with WebGPU and a reasonably capable GPU. On a laptop, force Chrome onto the dedicated GPU in the Windows graphics settings, or it will fall back to the integrated one.
 
-Open `ocean.html` directly in the browser. `ocean.min.html` is the same page minified (61 KB instead of 102 KB). Both are self-contained and work from `file://`.
+Open `ocean.html` directly in the browser. `ocean.min.html` is the same page minified. Both are self-contained and work from `file://`.
 
 To run from source:
 
@@ -43,6 +43,10 @@ On phones and tablets: drag with one finger to look around, tap once to start th
 The page opens on the **Taiwan sunset** preset: you stand on the sand of a curved bay at sunset (sun 5° up, wind 6 m/s, clearer deep-blue water), with a headland on each side, coconut palms swaying along the beach, seagulls gliding overhead, little crabs scuttling sideways across the sand and a lighthouse on a rocky islet in the bay whose lamp flashes as its beam sweeps round (more noticeable as the sun goes down). Close up, the sand has wind ripples, a line of washed-up seaweed, shells, starfish and pebbles, and two trails of footprints, a large one and a small one, leading down to the water. Near the beach the waves die down, the water runs up and back down the sand, and surf lines roll in. Pick **Original** in the panel, or open with `?preset=original`, for the upstream open-ocean look; the **Beach & gulls** slider switches the cove on its own.
 
 Sound starts with your first click, tap or key press (browsers block audio before that). It is synthesised live with Web Audio, so there are still no asset files: waves breaking on the beach timed to the swell period, the hiss of the backwash, wind that follows the wind slider, the odd seagull, and an optional ambient pad with soft bells. **Music → My music file** plays any local audio file on loop instead. `?sound=0` keeps the page silent.
+
+### Photo textures
+
+The sand, the shells, starfish and pebbles on it, and the palm trees come from AI-generated photos (made with ChatGPT/Gemini from prompts in this project). `tools/prepare_assets.py` makes the sand tileable, keys the green-screen palms and shells out, packs the shells into an atlas and writes `assets/*.webp` plus `js/assets.js`; `build.mjs` inlines them as data URLs, so `ocean.html` is still one file (about 1.3 MB now). The original source images are not in the repository.
 
 ### Phones and browsers without WebGPU
 

@@ -2,11 +2,12 @@
 //   SHORE_WGSL  terrain height + shore helpers, shared by the ocean, the height probe and LAND
 //   LAND        sand beach, dunes and the two headlands of the cove
 //   GULLS       a few seagulls gliding and flapping over the beach
-//   PALMS       coconut palms along both sides of the beach, swaying in the wind
+//   PALMS       photographed coconut palms on billboards along both sides of the beach
 //   LIGHTHOUSE  a lighthouse on a rocky islet in the bay with a rotating beam (BEAM entry points)
 //   CRABS       little crabs scuttling sideways across the sand
 import { FRAME_WGSL, ATMO_CORE_WGSL, ENV_MIPS } from './common.js';
 import { SKY_RENDER_FUNCS } from './sky.js';
+import { ASSET_META } from '../assets.js';
 
 // The camera starts on the sand looking out to sea (-Z). The waterline crosses the view
 // SHORE_Z metres from the origin and curves seaward on both sides into a bay; a near headland
@@ -81,7 +82,18 @@ fn aerial(col: vec3f, rel: vec3f) -> vec3f {
 
 // Polar grid around the camera: rings grow geometrically, so detail follows distance.
 export const LAND_RINGS = 128, LAND_SEGS = 256;
-export const LAND = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + /* wgsl */ `
+// Photographed sand (dry and wet) and an atlas of shells, starfish and pebbles cut out of a
+// photo; rects are (u, v, w, h) in the atlas, sizes the object's longest side in metres.
+const SHELL_N = ASSET_META.shellRects.length;
+const LAND_TEX = /* wgsl */ `
+@group(0) @binding(6) var sandDry: texture_2d<f32>;
+@group(0) @binding(7) var sandWet: texture_2d<f32>;
+@group(0) @binding(8) var shellTex: texture_2d<f32>;
+@group(0) @binding(9) var sampT: sampler;
+const SHELL_RECT = array<vec4f, ${SHELL_N}>(${ASSET_META.shellRects.map((r) => `vec4f(${r.slice(0, 4).join(', ')})`).join(', ')});
+const SHELL_SIZE = array<f32, ${SHELL_N}>(${ASSET_META.shellRects.map((r) => r[4].toFixed(4)).join(', ')});
+`;
+export const LAND = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + LAND_TEX + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + /* wgsl */ `
 struct VO {
   @builtin(position) pos: vec4f,
   @location(0) rel: vec3f,
@@ -105,48 +117,35 @@ fn hashC(c: vec2i, k: u32) -> f32 {
 }
 fn rot2(q: vec2f, a: f32) -> vec2f { return vec2f(q.x * cos(a) + q.y * sin(a), -q.x * sin(a) + q.y * cos(a)); }
 
-// Things lying on the sand, one per 0.55 m cell at most: pebbles, scallop shells, starfish and
-// white shell fragments, more of them along the wrack line. fp is the pixel footprint in
-// metres, used for anti-aliasing and to fade out objects smaller than a pixel.
+// Things lying on the sand, one per 0.55 m cell at most: shells, starfish and pebbles from the
+// photo atlas, each turned at random, with a soft shadow on the side away from the sun; more
+// of them along the wrack line. fp is the pixel footprint in metres, used to pick the mip
+// level and to fade out objects smaller than a pixel.
 struct Decal { col: vec3f, cov: f32, ao: f32 };
+fn shellAt(lu: vec2f, r: vec4f, lod: f32) -> vec4f {
+  if (any(lu < vec2f(0.0)) || any(lu > vec2f(1.0))) { return vec4f(0.0); }
+  return textureSampleLevel(shellTex, sampT, r.xy + lu * r.zw, lod);
+}
 fn beachDecal(p: vec2f, density: f32, fp: f32) -> Decal {
   var o: Decal;
   let cs = 0.55;
   let c = vec2i(floor(p / cs));
   if (hashC(c, 1u) > density) { return o; }
   let centre = (vec2f(c) + 0.25 + 0.5 * vec2f(hashC(c, 2u), hashC(c, 3u))) * cs;
-  let q = rot2(p - centre, hashC(c, 4u) * 6.2831853);
-  let kind = hashC(c, 5u);
-  let size = 0.04 + 0.07 * hashC(c, 6u);
-  let tone = hashC(c, 7u);
-  var sd = 1.0;
-  var col = vec3f(0.0);
-  if (kind < 0.4) {
-    // pebble: a flattened ellipse, lit from the sun side
-    sd = (length(q / vec2f(1.0, 0.7)) - size) * 0.7;
-    col = mix(vec3f(0.3, 0.29, 0.27), vec3f(0.62, 0.57, 0.5), tone) * (0.85 + 0.3 * clamp(dot(normalize(q + 1e-5), F.sunDir.xz), 0.0, 1.0));
-  } else if (kind < 0.78) {
-    // scallop: a ribbed fan opening from its hinge
-    let h = q + vec2f(0.0, size * 0.55);
-    let a = atan2(h.x, h.y);
-    let rr = length(h);
-    sd = max(rr - size * (1.0 + 0.05 * cos(a * 20.0)), (abs(a) - 1.0) * rr);
-    col = mix(vec3f(0.88, 0.82, 0.72), vec3f(0.86, 0.58, 0.48), tone) * (0.82 + 0.18 * cos(a * 20.0)) * (0.8 + 0.2 * rr / size);
-  } else if (kind < 0.88) {
-    // starfish: five tapering arms
-    let a = atan2(q.y, q.x);
-    let arm = pow(abs(cos(2.5 * a)), 4.0);
-    sd = (length(q) - size * (0.35 + 0.95 * arm)) * 0.6;
-    col = mix(vec3f(0.78, 0.32, 0.12), vec3f(0.85, 0.55, 0.25), tone) * (0.85 + 0.15 * sin(length(q) * 300.0));
-  } else {
-    // a bleached shell fragment
-    sd = (length(q / vec2f(1.0, 0.55)) - size * 0.45) * 0.55;
-    col = vec3f(0.9, 0.88, 0.84);
-  }
-  let fade = 1.0 - smoothstep(size * 0.4, size * 1.2, fp);
-  o.col = col;
-  o.cov = (1.0 - smoothstep(-fp, fp, sd)) * fade;
-  o.ao = (1.0 - smoothstep(0.0, size * 0.35 + fp, sd)) * 0.3 * fade;   // soft contact shadow
+  let ang = hashC(c, 4u) * 6.2831853;
+  let i = min(u32(hashC(c, 5u) * f32(${SHELL_N})), ${SHELL_N - 1}u);
+  let r = SHELL_RECT[i];
+  let m = SHELL_SIZE[i] * (0.75 + 0.5 * hashC(c, 6u));
+  let ext = vec2f(r.z, r.w) / max(r.z, r.w) * m;          // footprint of the object in metres
+  let lu = rot2(p - centre, ang) / ext + 0.5;
+  if (any(lu < vec2f(-0.4)) || any(lu > vec2f(1.4))) { return o; }
+  let lod = log2(max(fp / (ext.x / (r.z * 1024.0)), 1.0));
+  let s = shellAt(lu, r, lod);
+  let sh = shellAt(rot2(p + F.sunDir.xz * m * 0.3 - centre, ang) / ext + 0.5, r, lod + 1.5).a;
+  let fade = 1.0 - smoothstep(m * 0.3, m * 1.0, fp);
+  o.col = s.rgb;
+  o.cov = s.a * fade;
+  o.ao = sh * 0.45 * fade;
   return o;
 }
 
@@ -198,9 +197,16 @@ fn fresnelW(c: f32) -> f32 {
   let Ld = F.sunDir.xyz;
   let sunE = sunIlluminance() * sunVis[0];
 
+  // photographed sand at two scales and angles, so the tiling does not show
+  let uv1 = p / 1.1;
+  let uv2 = rot2(p, 0.7) / 3.3;
+  let mixK = 0.35 + 0.3 * smoothstep(-0.3, 0.3, gnoise(p * 0.25));
+  let dryT = mix(textureSample(sandDry, sampT, uv1).rgb, textureSample(sandDry, sampT, uv2).rgb, mixK);
+  let wetT = mix(textureSample(sandWet, sampT, uv1).rgb, textureSample(sandWet, sampT, uv2).rgb, mixK);
+
   // sand on gentle low ground, scrubby grass higher up, rock on the steep headland faces
-  let grain = gnoise(p * 3.7) * 0.5 + gnoise(p * 17.0) * 0.25;
-  var alb = vec3f(0.58, 0.48, 0.36) * (0.92 + 0.12 * grain);
+  let grain = gnoise(p * 0.9) * 0.5 + gnoise(p * 0.21) * 0.5;
+  var alb = dryT * (0.94 + 0.1 * grain);
   let grass = smoothstep(4.0, 9.0, h + 3.0 * gnoise(p * 0.05)) * smoothstep(0.55, 0.8, n.y);
   alb = mix(alb, vec3f(0.12, 0.16, 0.08), grass);
   let rock = 1.0 - smoothstep(0.45, 0.7, n.y);
@@ -210,6 +216,7 @@ fn fresnelW(c: f32) -> f32 {
   let reachUp = F.windP[1].y * 1.2;
   let wet = 1.0 - smoothstep(reachUp * 0.4, reachUp * 1.4, h);
   let sandy = (1.0 - grass) * (1.0 - rock) * (1.0 - smoothstep(4.0, 8.0, h));
+  alb = mix(alb, wetT, wet * sandy);
 
   // close-up detail on the beach: wind ripples, a line of washed-up seaweed at the high-water
   // mark, shells, starfish, pebbles and footprints
@@ -235,7 +242,7 @@ fn fresnelW(c: f32) -> f32 {
       alb *= 1.0 - 0.2 * dep - 0.45 * dep * (1.0 - lit);
     }
   }
-  alb *= 1.0 - 0.45 * wet;
+  alb *= 1.0 - 0.45 * wet * (1.0 - sandy);
 
   let amb = skyAmbient(n);
   var col = alb * (sunE * max(dot(nd, Ld), 0.0) * 0.318 + amb * 0.9);
@@ -321,123 +328,57 @@ struct VO {
 }
 `;
 
-// Coconut palms, generated entirely in the vertex shader: a curved, tapering trunk of
-// TRUNK_SEGS x TRUNK_SIDES quads and a crown of FRONDS fronds, each a drooping ribbon whose
-// leaflets are cut out in the fragment shader (alpha-to-coverage gives them soft edges).
-const TRUNK_SEGS = 10, TRUNK_SIDES = 6, FRONDS = 14, FROND_SEGS = 8;
-const TRUNK_VERTS = TRUNK_SEGS * TRUNK_SIDES * 6;
-export const PALM_COUNT = 18, PALM_VERTS = TRUNK_VERTS + FRONDS * FROND_SEGS * 6;
+// Coconut palms: photographed trees (green-screen cut-outs, backlit by a low sun) on
+// billboards parallel to the screen, anchored at the trunk base, flipped so each leans in
+// towards the middle of the beach, and swaying more towards the crown.
+const PALM_N = ASSET_META.palmLean.length;
+export const PALM_COUNT = 18, PALM_VERTS = 6;
 export const PALMS = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + /* wgsl */ `
+@group(0) @binding(6) var palmTex: texture_2d_array<f32>;
+@group(0) @binding(7) var sampT: sampler;
 const QUAD = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0));
+const PALM_BASE_U = array<f32, ${PALM_N}>(${ASSET_META.palmBaseU.join(', ')});
+const PALM_LEAN = array<f32, ${PALM_N}>(${ASSET_META.palmLean.map((x) => x.toFixed(1)).join(', ')});
+const PALM_ASPECT: f32 = ${ASSET_META.palmAspect};
 fn hash1(i: u32) -> f32 { return f32(pcgHash(i)) / 4294967296.0; }
 
-struct Palm { base: vec3f, height: f32, lean: vec3f, phase: f32 };
-fn palm(ii: u32) -> Palm {
+struct VO {
+  @builtin(position) pos: vec4f,
+  @location(0) rel: vec3f,
+  @location(1) uv: vec2f,
+  @location(2) @interpolate(flat) layer: u32,
+};
+@vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VO {
   // alternate sides of the beach, leaving the middle (and the sun, slightly right) open
   let side = select(-1.0, 1.0, (ii & 1u) == 1u);
   let k = f32(ii >> 1u);
   let x = side * (9.0 + k * 9.0 + 4.0 * hash1(ii * 5u)) + select(0.0, 4.0, side > 0.0);
   let z = shoreZ(x) + 10.0 + 14.0 * hash1(ii * 5u + 1u);
-  var o: Palm;
-  o.base = vec3f(x, terrainH(vec2f(x, z)) - 0.15, z);
-  o.height = 7.0 + 5.0 * hash1(ii * 5u + 2u);
-  // lean out over the sand towards the sea and a little towards the middle of the beach
-  let d = normalize(vec2f(-side * (0.3 + 0.5 * hash1(ii * 5u + 3u)), -1.0));
-  o.lean = vec3f(d.x, 0.0, d.y) * o.height * (0.15 + 0.25 * hash1(ii * 5u + 4u));
-  o.phase = hash1(ii * 5u + 3u) * 6.2831853;
-  return o;
-}
-fn sway(pm: Palm) -> vec3f {
-  let t = F.camPos.w;
-  let w = F.windP[0];
-  return vec3f(w.x, 0.0, w.y) * (0.18 * sin(t * 0.55 + pm.phase) + 0.07 * sin(t * 1.3 + pm.phase * 2.0)) * (0.5 + 0.06 * w.z);
-}
-fn trunkAt(pm: Palm, s: f32) -> vec3f {
-  return pm.base + vec3f(0.0, s * pm.height, 0.0) + pm.lean * pow(s, 1.7) + sway(pm) * s * s;
-}
+  let base = vec3f(x, terrainH(vec2f(x, z)) - 0.1, z);
+  let height = 8.5 + 5.0 * hash1(ii * 5u + 2u);
+  let layer = (ii + u32(hash1(ii * 5u + 3u) * 3.0)) % ${PALM_N}u;
+  let flip = PALM_LEAN[layer] != -side;
+  let baseU = select(PALM_BASE_U[layer], 1.0 - PALM_BASE_U[layer], flip);
 
-struct VO {
-  @builtin(position) pos: vec4f,
-  @location(0) rel: vec3f,
-  @location(1) uv: vec2f,      // trunk: (around, height m); frond: (along 0..1, across -1..1)
-  @location(2) kind: f32,      // 0 trunk, 1 frond
-  @location(3) nrm: vec3f,
-};
-@vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VO {
-  let pm = palm(ii);
+  let c = QUAD[vi];
+  let right = normalize(vec3f(F.camRight.x, 0.0, F.camRight.z));
+  let t = F.camPos.w;
+  let ph = hash1(ii * 5u + 4u) * 6.2831853;
+  let sway = (0.25 * sin(t * 0.55 + ph) + 0.08 * sin(t * 1.3 + ph * 2.0)) * (0.5 + 0.06 * F.windP[0].z) * c.y * c.y;
+  let world = base + right * ((c.x - baseU) * height * PALM_ASPECT + sway) + vec3f(0.0, c.y * height, 0.0);
   var o: VO;
-  var world: vec3f;
-  if (vi < ${TRUNK_VERTS}u) {
-    let quad = vi / 6u;
-    let c = QUAD[vi % 6u];
-    let s = (f32(quad / ${TRUNK_SIDES}u) + c.y) / ${TRUNK_SEGS}.0;
-    let a = (f32(quad % ${TRUNK_SIDES}u) + c.x) / ${TRUNK_SIDES}.0 * 6.2831853;
-    let T = normalize(trunkAt(pm, min(s + 0.02, 1.0)) - trunkAt(pm, max(s - 0.02, 0.0)));
-    let B1 = normalize(cross(T, vec3f(0.0, 0.0, 1.0)));
-    let B2 = cross(T, B1);
-    let r = 0.17 * (1.2 - 0.45 * s) + 0.14 * pow(1.0 - s, 8.0);
-    o.nrm = cos(a) * B1 + sin(a) * B2;
-    world = trunkAt(pm, s) + o.nrm * r;
-    o.uv = vec2f(a, s * pm.height);
-    o.kind = 0.0;
-  } else {
-    let j = vi - ${TRUNK_VERTS}u;
-    let f = j / ${FROND_SEGS * 6}u;
-    let quad = (j % ${FROND_SEGS * 6}u) / 6u;
-    let c = QUAD[j % 6u];
-    let t = (f32(quad) + c.x) / ${FROND_SEGS}.0;
-    let w = c.y * 2.0 - 1.0;
-    let fseed = ii * 31u + f;
-    let th = f32(f) / ${FRONDS}.0 * 6.2831853 + hash1(fseed) * 0.5;
-    let d = vec3f(cos(th), 0.0, sin(th));
-    let len = 4.3 + 1.7 * hash1(fseed + 7u);
-    let rise = 0.15 + 0.55 * hash1(fseed + 3u);              // some fronds stand up, most droop
-    let tm = F.camPos.w;
-    let flutter = 0.12 * t * t * sin(tm * 2.1 + f32(f) * 1.7 + pm.phase);
-    let crown = trunkAt(pm, 1.0);
-    let centre = crown + d * len * t + vec3f(0.0, len * (rise * t - 0.8 * t * t) + flutter, 0.0) + sway(pm) * 0.5 * t;
-    let side = normalize(cross(d, vec3f(0.0, 1.0, 0.0)));
-    let width = 0.8 * pow(sin(3.14159 * min(t * 1.1, 1.0)), 0.7) * (1.0 - 0.25 * t);
-    world = centre + side * w * width - vec3f(0.0, abs(w) * width * 0.35, 0.0);   // leaflets hang down from the midrib
-    let tang = d + vec3f(0.0, rise - 1.6 * t, 0.0);
-    o.nrm = normalize(cross(side, tang));
-    o.uv = vec2f(t, w);
-    o.kind = 1.0;
-  }
   o.rel = world - F.camPos.xyz;
   o.pos = F.viewProj * vec4f(o.rel, 1.0);
+  o.uv = vec2f(select(c.x, 1.0 - c.x, flip), 1.0 - c.y);
+  o.layer = layer;
   return o;
 }
-
 @fragment fn fs(in: VO) -> @location(0) vec4f {
-  // leaflets: slanted cuts across the frond, ragged towards the tips (computed for every
-  // fragment so the derivatives stay in uniform control flow)
-  let l = fract(in.uv.x * 34.0 - abs(in.uv.y) * 1.6);
-  let aw = fwidth(l) + 0.02;
-  let gap = smoothstep(0.6 - aw, 0.6 + aw, l) * smoothstep(0.06, 0.14, abs(in.uv.y));
-  let tip = 1.0 - smoothstep(0.82, 1.0, abs(in.uv.y) + 0.12 * sin(in.uv.x * 90.0));
-  let leafA = (1.0 - gap) * tip;
-
-  let dist = length(in.rel);
-  let V = -in.rel / dist;
-  var n = normalize(in.nrm);
-  if (dot(n, V) < 0.0) { n = -n; }
-  let Ld = F.sunDir.xyz;
-  let sunE = sunIlluminance() * sunVis[0];
-  var alb: vec3f;
-  var a = 1.0;
-  var trans = vec3f(0.0);
-  if (in.kind < 0.5) {
-    let rings = 0.82 + 0.18 * smoothstep(0.25, 0.6, fract(in.uv.y * 3.3 + 0.1 * sin(in.uv.x * 3.0)));
-    alb = vec3f(0.3, 0.24, 0.18) * rings;
-  } else {
-    alb = mix(vec3f(0.12, 0.2, 0.06), vec3f(0.24, 0.27, 0.09), clamp(in.uv.x + 0.2 * in.uv.y, 0.0, 1.0));
-    a = leafA;
-    // fronds glow gold where the low sun shines through them
-    trans = sunE * vec3f(0.3, 0.32, 0.06) * pow(max(dot(Ld, -V), 0.0), 3.0) * 0.4;
-  }
-  let col = alb * (sunE * max(dot(n, Ld), 0.0) * 0.318 + skyAmbient(n) * 0.85) + trans;
-  return vec4f(aerial(col, in.rel), a);
+  let s = textureSample(palmTex, sampT, in.uv, in.layer);
+  // the photo already carries the backlit sunset look: scale it to the scene's light level
+  let lum = vec3f(0.2126, 0.7152, 0.0722);
+  let k = dot(skyAmbient(vec3f(0.0, 1.0, 0.0)), lum) * 1.3 + dot(sunIlluminance() * sunVis[0], lum) * 0.05;
+  return vec4f(aerial(s.rgb * k, in.rel), smoothstep(0.2, 0.7, s.a));
 }
 `;
 

@@ -12,10 +12,18 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const wgslModules = ['js/wgsl/common.js', 'js/wgsl/sim.js', 'js/wgsl/sky.js', 'js/wgsl/land.js', 'js/wgsl/ocean.js', 'js/wgsl/post.js'];
-const order = [...wgslModules, 'js/audio.js', 'js/main.js'];
+const order = ['js/assets.js', ...wgslModules, 'js/audio.js', 'js/main.js'];
 const stripModuleSyntax = (src) => src
   .replace(/^import[\s\S]*?from\s+['"][^'"]+['"];\s*$/gm, '')                 // drop imports
   .replace(/^export\s+(const|function|async function|let|class)\s/gm, '$1 ');
+
+// The photo textures are inlined as data URLs so both pages stay single files.
+const inlineAssets = (src) => src.replace(/(['"])assets\/([\w-]+\.webp)\1/g, (_, q, f) =>
+  `${q}data:image/webp;base64,${fs.readFileSync(path.join(root, 'assets', f)).toString('base64')}${q}`);
+const read = (f) => {
+  const src = fs.readFileSync(path.join(root, f), 'utf8');
+  return f === 'js/assets.js' ? inlineAssets(src) : src;
+};
 
 const page = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const SCRIPT_TAG = '<script type="module" src="js/main.js"></script>';
@@ -26,7 +34,7 @@ const write = (name, html) => {
 
 // ---- readable bundle --------------------------------------------------------------------
 let code = '';
-for (const f of order) code += `// ---- ${f} ----\n${stripModuleSyntax(fs.readFileSync(path.join(root, f), 'utf8'))}\n`;
+for (const f of order) code += `// ---- ${f} ----\n${stripModuleSyntax(read(f))}\n`;
 write('ocean.html', page.replace(SCRIPT_TAG, () => `<script type="module">\n${code}\n</script>`));
 
 // ---- minified bundle --------------------------------------------------------------------
@@ -52,7 +60,7 @@ function minifyTemplates(src) {
     return '`' + out + '`';
   });
 }
-let minJs = '';
+let minJs = stripModuleSyntax(read('js/assets.js')) + '\n';
 for (const f of wgslModules) minJs += stripModuleSyntax(minifyTemplates(fs.readFileSync(path.join(root, f), 'utf8'))) + '\n';
 for (const f of ['js/audio.js', 'js/main.js']) minJs += stripModuleSyntax(fs.readFileSync(path.join(root, f), 'utf8')) + '\n';
 

@@ -16,6 +16,7 @@ const types = {
   '.wgsl': 'text/plain; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.png': 'image/png',
+  '.webp': 'image/webp',
   '.json': 'application/json',
 };
 

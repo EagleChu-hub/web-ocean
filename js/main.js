@@ -12,6 +12,7 @@ import {
   LIGHTHOUSE, LIGHTHOUSE_VERTS, BEAM_VERTS, CRABS, CRAB_COUNT, CRAB_VERTS,
 } from './wgsl/land.js';
 import { createSoundscape } from './audio.js';
+import { ASSET_URLS } from './assets.js';
 
 const qs = new URLSearchParams(location.search);
 const DBG = Number(qs.get('dbg')) || 0;
@@ -324,6 +325,43 @@ async function main() {
     fullArr(foamW[i]), { buffer: sunVisBuf }], 'ocean' + i));
   const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp], 'sky');
 
+  // Photo textures (sand, shells, palms): decoded, mip-mapped through a canvas and uploaded
+  // as sRGB. The URLs are files in assets/ when served, data URLs in the bundled pages.
+  async function imageTexture(urls) {
+    const bitmaps = await Promise.all(urls.map(async (u) =>
+      createImageBitmap(await (await fetch(u)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })));
+    const w = bitmaps[0].width, h = bitmaps[0].height;
+    const mips = Math.floor(Math.log2(Math.max(w, h))) + 1;
+    const tex = device.createTexture({
+      size: [w, h, bitmaps.length], format: 'rgba8unorm-srgb', mipLevelCount: mips,
+      usage: TU.TEXTURE_BINDING | TU.COPY_DST | TU.RENDER_ATTACHMENT,
+    });
+    const canvases = [document.createElement('canvas'), document.createElement('canvas')];
+    bitmaps.forEach((bm, layer) => {
+      let src = bm;
+      for (let m = 0; m < mips; m++) {
+        const mw = Math.max(1, w >> m), mh = Math.max(1, h >> m);
+        if (m > 0) {
+          const cv = canvases[m & 1];
+          cv.width = mw; cv.height = mh;
+          const c2 = cv.getContext('2d');
+          c2.imageSmoothingQuality = 'high';
+          c2.drawImage(src, 0, 0, mw, mh);
+          src = cv;
+        }
+        device.queue.copyExternalImageToTexture({ source: src }, { texture: tex, mipLevel: m, origin: [0, 0, layer] }, [mw, mh]);
+      }
+    });
+    return tex;
+  }
+  const palmUrls = Object.keys(ASSET_URLS).filter((k) => k.startsWith('palm')).map((k) => ASSET_URLS[k]);
+  const [sandDryTex, sandWetTex, shellTex, palmTex] = await Promise.all([
+    imageTexture([ASSET_URLS.sandDry]), imageTexture([ASSET_URLS.sandWet]), imageTexture([ASSET_URLS.shells]), imageTexture(palmUrls),
+  ]);
+  const sampTex = device.createSampler({
+    magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 8,
+  });
+
   // Beach terrain (camera-centred polar grid) and seagulls, drawn into the main pass.
   const [landMod, gullMod, palmMod, lhMod, crabMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'),
     shader(PALMS, 'palms'), shader(LIGHTHOUSE, 'lighthouse'), shader(CRABS, 'crabs')]);
@@ -351,9 +389,9 @@ async function main() {
       multisample: { count: MSAA },
     })]);
   const landRes = [{ buffer: frameUBO }, transView, skyView, sampClamp, envCubeView, { buffer: sunVisBuf }];
-  const bgLand = bg(landPipe, landRes, 'land');
+  const bgLand = bg(landPipe, [...landRes, sandDryTex.createView(), sandWetTex.createView(), shellTex.createView(), sampTex], 'land');
   const bgGulls = bg(gullPipe, landRes, 'gulls');
-  const bgPalms = bg(palmPipe, landRes, 'palms');
+  const bgPalms = bg(palmPipe, [...landRes, palmTex.createView({ dimension: '2d-array' }), sampTex], 'palms');
   const bgLH = bg(lhPipe, landRes, 'lighthouse');
   const bgCrabs = bg(crabPipe, landRes, 'crabs');
   const bgBeam = bg(beamPipe, [{ buffer: frameUBO }], 'beam');   // the beam only reads the frame uniforms
