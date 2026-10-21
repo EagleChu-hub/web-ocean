@@ -45,6 +45,7 @@ npm run build    # 重新產生 ocean.html 與 ocean.min.html（含內嵌照片�
    - ✅ 近岸碎浪（land.js `surf()`）：淺水波速 sqrt(g·d) 讓浪變密、變高變陡、水深約 1.3 倍浪高處碎成白浪；沿岸相位與浪組變化。沖刷 `swash()` 用水線相位（整片一起動，避免近水線相位劇變造成反常的乾帶）。沙灘依「水退去幾秒」畫鏡面水膜與泡沫線
    - ✅ 離海距離 `P.seaDist`（預設 6 m）
    - ✅ 入夜 `P.night`（0 夕陽 → 0.5 暮光、星星 → 1 月光）：太陽降到 -7°，之後把「太陽」換成月亮（同一套大氣光源，亮度 1/50），曝光、色調、照片物件亮度（`photoDusk()`）跟著變；`nightAuto`/`nightMin` 自動入夜；預設「月光海灘」。Frame uniform 多了 `night` vec4（400 bytes）
+   - ✅ 藍眼淚 `P.blueTears`（0–2，乘上 night.x 只在天黑時出現）：碎浪捲線、白沫、水線發藍光，濕沙上退潮後留下光點；帆船 `P.boat`：BOAT shader 畫 700 m 外的剪影，每 600 秒（simTime 循環）從左漂到右，兩端在霧中淡入淡出，天黑後桅燈亮。Frame uniform 再多 `extra` vec4（416 bytes）
    - ✅ 呼吸引導 `P.breath`：吸 4 秒吐 6 秒，左下圓圈縮放；湧浪週期改成 10 秒，鏡頭前浪峰在吸氣結束時到，音效每次呼吸一道浪（`sound.breathWave`）
    - 外部模型評估過（OpenGameArt/Quaternius 的 CC0 棕櫚樹為 .blend/.fbx，且容器連不到那些網站），為維持單檔與程序生成，改用自寫 WGSL
    - ✅ 手機：觸控看四周、🔊⚙ 按鈕、較輕網格、動態解析度、螢幕常亮；無 WebGPU 時只播聲音

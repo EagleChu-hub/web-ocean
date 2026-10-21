@@ -52,6 +52,8 @@ The sand, the shells, starfish and pebbles on it, the palm trees, the lighthouse
 
 **入夜程度** (`night`, 0–1) takes the scene from the sunset through dusk, when the stars come out and the lighthouse beam stands out, to a moonlit night; **自動入夜** lets it happen by itself over **入夜時間** minutes, and the **月光海灘** preset starts at night. **呼吸引導** (`breath=1`) shows a circle that grows for a 4 s in-breath and shrinks for a 6 s out-breath; the swell slows to a 10 s period so a wave rolls in with every in-breath and drains away with every out-breath, in the picture and in the sound.
 
+After dark the surf glows with **藍眼淚** ("blue tears", the bioluminescent plankton Matsu is known for): the breaking lips, the foam and the edge of the swash light up blue, and the backwash leaves glowing specks on the wet sand. A **帆船** (sailboat) silhouette drifts across the bay every ten minutes, with a masthead light at night.
+
 ### Phones and browsers without WebGPU
 
 On phones the mesh is lighter and the render resolution starts at 75% with the pixel ratio capped at 2; on every device the resolution then adapts between 50% and 100% to hold the frame rate. The screen is kept awake while the page is open. Where WebGPU is not available the page shows a quiet sunset screen with a button that plays the soundscape on its own.
