@@ -85,7 +85,7 @@ fn surf(depth: f32, xz: vec2f) -> Surf {
   // and the band where the wave is actually curling over
   o.front = cos(sk);
   o.behind = fract((sk - 1.5708) / 6.2831853) * 6.2831853;
-  o.breaking = smoothstep(dB * 2.0, dB * 1.1, depth) * smoothstep(0.1, dB * 0.5, depth);
+  o.breaking = smoothstep(dB * 2.6, dB * 1.1, depth) * smoothstep(0.1, dB * 0.4, depth);
   return o;
 }
 
