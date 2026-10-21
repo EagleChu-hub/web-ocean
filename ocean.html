@@ -1170,8 +1170,9 @@ fn main(@builtin(local_invocation_index) k: u32) {
 
 // The camera starts on the sand looking out to sea (-Z). The waterline crosses the view
 // SHORE_Z metres from the origin and curves seaward on both sides into a bay; a near headland
-// on the left and a farther one on the right close the cove ~460 m out to sea. F.windP[1] = (swell angular frequency, swash amplitude,
-// beach on/off, -). Requires NOISE_WGSL (gnoise) and F.
+// on the left and a farther one on the right close the cove ~460 m out to sea.
+// F.windP[1] = (swell angular frequency, swash amplitude, beach on/off, breaker height).
+// Requires NOISE_WGSL (gnoise) and F.
 const SHORE_WGSL = /* wgsl */ `
 const SHORE_Z: f32 = -14.0;
 // slightly left of the sunset and narrow enough in angle to stay in a phone's portrait view
@@ -1202,16 +1203,50 @@ fn terrainH(p: vec2f) -> f32 {
   return max(h + hill, islet);
 }
 
-// Waves shrink as the water gets shallow, so the sea meets the sand calmly.
-fn shoreDamp(depth: f32) -> f32 { return smoothstep(0.2, 7.0, depth); }
+// The open-sea (FFT) waves fade out in the shallows; the breaking waves below take over.
+fn shoreDamp(depth: f32) -> f32 { return smoothstep(0.5, 9.0, depth); }
 
-// Phase of the swell arriving at the beach: crests move towards shallower water.
-fn shorePhase(depth: f32) -> f32 { return F.windP[1].x * F.camPos.w + depth * 1.6; }
+// Phase of the swell arriving at the beach. In water of depth d a wave travels at sqrt(g d),
+// so the crests slow down and crowd together as they come in (travel time to the waterline
+// integrated over the 1:22 beach).
+// The crests are not ruler-straight: along the beach they arrive a little earlier or later.
+fn shorePhase(depth: f32, xz: vec2f) -> f32 {
+  let wobble = 1.1 * gnoise(vec2f(xz.x * 0.018, 3.7)) + 0.35 * gnoise(xz * vec2f(0.06, 0.02) + 11.0);
+  return F.windP[1].x * (F.camPos.w + 2.0 * sqrt(max(depth, 0.0)) / (BEACH_SLOPE * 3.132)) + wobble;
+}
+// Waves come in sets, and are bigger in some stretches of the beach than in others.
+fn setSize(xz: vec2f) -> f32 {
+  return (0.8 + 0.2 * sin(F.windP[1].x * F.camPos.w * 0.137)) * (0.8 + 0.4 * gnoise(vec2f(xz.x * 0.025, 9.1)));
+}
+
+// Breaking waves: they grow and steepen as the water shoals, break where the depth is about
+// 1.3 times their height (F.windP[1].w), and run on to the sand as a lower, foaming bore.
+// h = height, dhdd = d(height)/d(depth), crest = 0..1 position in the wave (1 = crest),
+// broken = how far into the surf zone (0 before breaking, 1 well inside it).
+struct Surf { h: f32, dhdd: f32, crest: f32, broken: f32 };
+fn surf(depth: f32, xz: vec2f) -> Surf {
+  var o: Surf;
+  let H = F.windP[1].w * setSize(xz);
+  let dB = 1.3 * H;
+  let ph = shorePhase(depth, xz);
+  // skewed so the shoreward face is steep and the back gentle, with long flat troughs
+  let sk = ph + 0.55 * cos(ph);
+  let p = 0.5 + 0.5 * sin(sk);
+  // (on the sand itself only the swash runs up: the bore has spent itself by then)
+  let amp = H * select(0.3 + 0.7 * max(depth, 0.0) / dB, 1.0 - smoothstep(dB, 14.0, depth), depth > dB) * smoothstep(0.0, 0.4, depth);
+  o.h = amp * (p * p * p - 0.2);
+  let dpdd = F.windP[1].x / (BEACH_SLOPE * 3.132 * sqrt(max(depth, 0.05)));
+  o.dhdd = amp * 1.5 * p * p * cos(sk) * (1.0 - 0.55 * sin(ph)) * dpdd * step(0.0, depth);
+  o.crest = p;
+  o.broken = smoothstep(dB * 1.35, dB * 0.85, depth);
+  return o;
+}
 
 // Run-up and backwash: the water level in the shallows and on the sand rises and falls.
-fn swash(depth: f32) -> f32 {
+fn swash(depth: f32, xz: vec2f) -> f32 {
   let w = 1.0 - smoothstep(0.0, 2.5, depth);
-  return F.windP[1].y * sin(shorePhase(depth)) * w;
+  // the swash is one sheet of water moving together, so it takes the phase at the waterline
+  return F.windP[1].y * setSize(xz) * sin(shorePhase(0.0, xz)) * w;
 }
 `;
 
@@ -1376,7 +1411,20 @@ fn fresnelW(c: f32) -> f32 {
   let reachUp = F.windP[1].y * 1.2;
   let wet = 1.0 - smoothstep(reachUp * 0.4, reachUp * 1.4, h);
   let sandy = (1.0 - grass) * (1.0 - rock) * (1.0 - smoothstep(4.0, 8.0, h));
-  alb = mix(alb, wetT, wet * sandy);
+
+  // freshly washed sand: at the waterline the water level is A sin(w t). Sand at height h was
+  // last uncovered when the falling water passed it; it keeps a shiny film of water for a few
+  // seconds after, and the top of each run-up leaves a line of foam bubbles that fades
+  let A = max(F.windP[1].y * setSize(p), 1e-3);
+  let w = max(F.windP[1].x, 1e-3);
+  let off = 3.14159265 - asin(clamp(h / A, -1.0, 1.0));
+  let since = fract((shorePhase(0.0, p) - off) / 6.2831853) * 6.2831853 / w;
+  let reached = (1.0 - smoothstep(A * 0.95, A * 1.05, h)) * sandy;
+  let film = reached * exp(-since / 2.5);
+  let laceN = smoothstep(0.05, 0.35, gnoise(p * 9.0) + 0.5 * gnoise(p * 23.0));
+  let lace = reached * smoothstep(A * 0.6, A * 0.95, h) * exp(-since / 6.0) * laceN;
+  let wetAll = max(wet, film);
+  alb = mix(alb, wetT, wetAll * sandy);
 
   // close-up detail on the beach: wind ripples, a line of washed-up seaweed at the high-water
   // mark, shells, starfish, pebbles and footprints
@@ -1403,15 +1451,20 @@ fn fresnelW(c: f32) -> f32 {
     }
   }
   alb *= 1.0 - 0.45 * wet * (1.0 - sandy);
+  alb = mix(alb, vec3f(0.8, 0.82, 0.82), lace * 0.8);
 
   let amb = skyAmbient(n);
   var col = alb * (sunE * max(dot(nd, Ld), 0.0) * 0.318 + amb * 0.9);
-  if (wet > 0.0) {
+  // damp sand has a soft sheen; the water film left by the backwash is a mirror for the sky
+  // and the low sun
+  let gloss = max(wet * 0.55, film) * (1.0 - lace);
+  if (gloss > 0.0) {
     let nW = normalize(mix(n, vec3f(0.0, 1.0, 0.0), 0.7));
     var R = reflect(-V, nW);
     R.y = abs(R.y);
-    let refl = textureSampleLevel(envCube, sampC, R, 2.0).rgb;
-    col += refl * fresnelW(dot(nW, V)) * wet * 0.9;
+    let refl = textureSampleLevel(envCube, sampC, R, mix(2.5, 0.5, film)).rgb;
+    let glint = sunE * pow(max(dot(R, Ld), 0.0), 600.0) * film * 4.0;
+    col += (refl + glint) * fresnelW(dot(nW, V)) * gloss;
   }
   return vec4f(aerial(col, in.rel), 1.0);
 }
@@ -1818,7 +1871,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
   let L = skyAtmo(d2) * (1.0 - cl.a) + cl.rgb + sunDisk(dir) * sunT;
-  return vec4f(L, 1.0);
+  return vec4f(min(L, vec3f(6.0e4)), 1.0);   // stay below the half-float maximum
 }
 `;
 
@@ -1863,10 +1916,12 @@ struct VSOut {
       disp += textureSampleLevel(dispTex, sampR, xz * F.cascInvL[c >> 2u][c & 3u], c, lod).xyz;
     }
   }
-  // in the shallows the waves die down and the water runs up and down the beach instead
+  // in the shallows the open-sea waves give way to breaking waves, and the water runs up and
+  // down the beach
   let ground = terrainH(xz);
   disp *= shoreDamp(-ground);
-  disp.y += swash(-ground);
+  if (beachOn() && ground > -14.0) { disp.y += surf(-ground, xz).h; }
+  disp.y += swash(-ground, xz);
   var o: VSOut;
   let world = vec3f(xz.x + disp.x, disp.y, xz.y + disp.z);
   o.rel = world - F.camPos.xyz;
@@ -1922,6 +1977,20 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
     jzz += dv.w;
     jxz += av.w;
     cov += vec3f(max(mv.x - dv.x * dv.x, 0.0), max(mv.y - dv.y * dv.y, 0.0), mv.z - dv.x * dv.y);
+  }
+  // slope of the breaking waves: their height changes with depth, so its gradient follows
+  // the slope of the sea bed
+  let depth = -in.ground;
+  var sf: Surf;
+  let inSurf = beachOn() && depth < 14.0;
+  if (inSurf) {
+    sf = surf(depth, xz);
+    let e = 0.5;
+    let gD = -vec2f(terrainH(xz + vec2f(e, 0.0)) - terrainH(xz - vec2f(e, 0.0)),
+                    terrainH(xz + vec2f(0.0, e)) - terrainH(xz - vec2f(0.0, e))) / (2.0 * e);
+    // capped: d(phase)/d(depth) grows without bound at the waterline
+    let ss = sf.dhdd * gD;
+    s += ss * min(1.0, 0.35 / max(length(ss), 1e-6));
   }
   let dist = length(in.rel);
   let V = -in.rel / dist;
@@ -2026,16 +2095,17 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   // freshly broken crests: dense, almost opaque core
   foamMask = max(foamMask, smoothstep(0.35, 0.9, fwl.g) * smoothstep(0.25, 0.6, pat + 0.25) * 0.95);
   // ---- shore ----
-  // surf lines rolling in over the shallows, a foam fringe where the water meets the sand,
-  // and the sand showing through thin water
-  let depth = -in.ground;
+  // whitewater on the breaking crests and lingering foam through the surf zone, a thin cap
+  // on crests about to break, a foam fringe where the water meets the sand, and the sand
+  // showing through thin water
   let waterD = in.rel.y + F.camPos.y - in.ground;
   var edge = 0.0;
-  if (beachOn() && depth < 8.0) {
-    let ph = shorePhase(depth);
-    let surf = smoothstep(0.72, 1.0, sin(ph)) * smoothstep(0.25, 1.0, depth) * (1.0 - smoothstep(2.5, 6.0, depth));
+  if (inSurf) {
+    let ph = shorePhase(depth, xz);
+    let white = sf.broken * (smoothstep(0.45, 0.9, sf.crest) + 0.25) * smoothstep(0.0, 0.3, depth) +
+                (1.0 - sf.broken) * smoothstep(0.93, 1.0, sf.crest) * (1.0 - smoothstep(F.windP[1].w * 1.6, F.windP[1].w * 3.0, depth)) * 0.6;
     edge = 1.0 - smoothstep(0.0, 0.1 + 0.08 * max(cos(ph), 0.0), waterD);
-    cover = max(cover, surf * 0.85 + edge * 0.7);
+    cover = max(cover, white * 0.9 + edge * 0.7);
     let shallowFoam = smoothstep(0.2, 0.75, cover) * smoothstep(0.3, 0.8, pat + 0.15);
     foamMask = max(foamMask, shallowFoam * 0.9);
     let bed = vec3f(0.5, 0.46, 0.36) * (sunE * max(Ld.y, 0.0) * 0.25 + skyHemi * 0.9) + vec3f(0.0, 0.04, 0.035) * skyUp;
@@ -2078,7 +2148,7 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   let hz = normalize(vec3f(-V.x, 0.002, -V.z));
   let fogCol = skyAtmo(hz);
   col = col * T + fogCol * (1.0 - T);
-  return vec4f(col, 1.0);
+  return vec4f(min(col, vec3f(6.0e4)), 1.0);
 }
 `;
 
@@ -2106,7 +2176,9 @@ fn main() {
     x0 = goal - d.xz;
   }
   let ground = terrainH(goal);
-  outH[0] = dispAt(x0).y * shoreDamp(-ground) + swash(-ground);
+  var hs = dispAt(x0).y * shoreDamp(-ground) + swash(-ground, goal);
+  if (beachOn() && ground > -14.0) { hs += surf(-ground, goal).h; }
+  outH[0] = hs;
   outH[1] = ground;
 }
 `;
@@ -2222,6 +2294,9 @@ fn ign(p: vec2f) -> f32 { return fract(52.9829189 * fract(dot(p, vec2f(0.0671105
   let dims = vec2f(textureDimensions(hdr));
   let pc = vec2i(in.pos.xy);
   var c = textureLoad(hdr, pc, 0).rgb;
+  // the sun's core can overflow half-float to infinity, which the tone curve turns into NaN
+  // (a black dot in the sun): clamp it and drop any NaN
+  c = min(select(c, vec3f(0.0), c != c), vec3f(6.0e4));
   // the up-chain accumulates 8 blur levels
   let b = textureSampleLevel(bloom, samp, in.uv, 0.0).rgb * (1.0 / 8.0);
   c = mix(c, b, U.p.y);
@@ -2284,6 +2359,8 @@ function createSoundscape(P) {
   }
 
   function build() {
+    // iPhone: play as media, so the ring/silent switch does not mute the page (Safari 17+)
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* not supported */ }
     ac = new AudioContext();
     master = gainNode(0); master.connect(ac.destination);
     oceanBus = gainNode(S.ocean); oceanBus.connect(master);
@@ -2419,6 +2496,8 @@ function createSoundscape(P) {
     get mode() { return S.mode; },
     setOn,
     toggle() { setOn(!S.on); },
+    // phones suspend audio when the screen locks or the page is hidden; call from a gesture
+    resume() { if (S.on && ac && ac.state !== 'running') ac.resume(); },
     setOcean(v) { S.ocean = v; if (ac) oceanBus.gain.setTargetAtTime(v, ac.currentTime, 0.1); },
     setMusic(v) { S.music = v; if (ac) musicBus.gain.setTargetAtTime(v, ac.currentTime, 0.1); },
     setMode(mode) { S.mode = mode; if (ac) startMusic(); },
@@ -2483,7 +2562,8 @@ const P = {
   veil: 0.36,
   bloom: 0.10,
   beach: 0,            // sandy cove with headlands and seagulls
-  seaDist: 12,         // m from the waterline where the camera sits on the beach
+  seaDist: 6,          // m from the waterline where the camera sits on the beach
+  crabs: 0,            // little crabs on the sand (off: they did not look convincing)
 };
 // Named starting points for P (?preset=original picks the upstream look). The first one loads
 // by default; the panel's preset menu switches between them.
@@ -3176,8 +3256,9 @@ async function main() {
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
     f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed;
-    // shore: swell angular frequency, swash amplitude (m), beach on/off
+    // shore: swell angular frequency, swash amplitude (m), beach on/off, breaker height (m)
     f[60] = Math.sqrt(9.81 * 2 * Math.PI / P.swellLength); f[61] = 0.1 + 0.06 * P.swellHs; f[62] = P.beach;
+    f[63] = 0.35 + 0.25 * P.swellHs;
     f[64] = R0; f[65] = GRID; f[66] = FOAM_LEVEL_SIZE[0]; f[67] = FOAM_LEVEL_SIZE[1];
     f[68] = P.exposure; f[69] = P.bloom; f[70] = frameIndex; f[71] = DBG;
     f[72] = P.haze; f[73] = Math.max(cam.y, 10) * 0.001; f[74] = P.veil; f[75] = 0.9;
@@ -3248,6 +3329,7 @@ async function main() {
     ['bloom', '光暈', 0, 0.3, 0.001, ''],
     ['beach', '沙灘與景物', 0, 1, 1, 'cam'],
     ['seaDist', '離海距離 (m)', 3, 40, 1, 'cam'],
+    ['crabs', '小螃蟹', 0, 1, 1, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const val = document.createElement('output');
@@ -3324,15 +3406,19 @@ async function main() {
     navigator.wakeLock.request('screen').then((l) => { wakeLock = l; l.addEventListener('release', () => { wakeLock = null; }); }, () => {});
   };
   document.addEventListener('visibilitychange', keepAwake);
+  // Browsers only let a page start audio from a gesture that "activates" it: a key, a mouse
+  // press, or on touch screens the finger lifting (pointerup/touchend) - not pointerdown.
+  const GESTURES = ['pointerup', 'touchend', 'click', 'keydown'];
   const firstGesture = (e) => {
-    removeEventListener('pointerdown', firstGesture);
-    removeEventListener('keydown', firstGesture);
+    for (const ev of GESTURES) removeEventListener(ev, firstGesture);
     hint.classList.add('gone');
     keepAwake();
     if (qs.get('sound') !== '0' && !sound.on && e.target !== bSound) { sound.setOn(true); syncSound(); }
   };
-  addEventListener('pointerdown', firstGesture);
-  addEventListener('keydown', firstGesture);
+  for (const ev of GESTURES) addEventListener(ev, firstGesture);
+  // and get it going again after the phone was locked or the page was in the background
+  for (const ev of ['pointerup', 'touchend']) addEventListener(ev, () => sound.resume());
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sound.resume(); });
 
   const hudFps = document.getElementById('fps');
 
@@ -3504,9 +3590,11 @@ async function main() {
       rp.setPipeline(sceneryPipe);
       rp.setBindGroup(0, bgScenery);
       rp.draw(SCENERY_VERTS, 2);
-      rp.setPipeline(crabPipe);
-      rp.setBindGroup(0, bgCrabs);
-      rp.draw(CRAB_VERTS, CRAB_COUNT);
+      if (P.crabs) {
+        rp.setPipeline(crabPipe);
+        rp.setBindGroup(0, bgCrabs);
+        rp.draw(CRAB_VERTS, CRAB_COUNT);
+      }
     }
     rp.setPipeline(skyPipe);
     rp.setBindGroup(0, bgSky);

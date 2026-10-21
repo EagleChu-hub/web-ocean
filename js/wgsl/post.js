@@ -108,6 +108,9 @@ fn ign(p: vec2f) -> f32 { return fract(52.9829189 * fract(dot(p, vec2f(0.0671105
   let dims = vec2f(textureDimensions(hdr));
   let pc = vec2i(in.pos.xy);
   var c = textureLoad(hdr, pc, 0).rgb;
+  // the sun's core can overflow half-float to infinity, which the tone curve turns into NaN
+  // (a black dot in the sun): clamp it and drop any NaN
+  c = min(select(c, vec3f(0.0), c != c), vec3f(6.0e4));
   // the up-chain accumulates 8 blur levels
   let b = textureSampleLevel(bloom, samp, in.uv, 0.0).rgb * (1.0 / 8.0);
   c = mix(c, b, U.p.y);

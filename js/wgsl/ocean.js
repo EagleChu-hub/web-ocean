@@ -36,7 +36,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
   let L = skyAtmo(d2) * (1.0 - cl.a) + cl.rgb + sunDisk(dir) * sunT;
-  return vec4f(L, 1.0);
+  return vec4f(min(L, vec3f(6.0e4)), 1.0);   // stay below the half-float maximum
 }
 `;
 
@@ -81,10 +81,12 @@ struct VSOut {
       disp += textureSampleLevel(dispTex, sampR, xz * F.cascInvL[c >> 2u][c & 3u], c, lod).xyz;
     }
   }
-  // in the shallows the waves die down and the water runs up and down the beach instead
+  // in the shallows the open-sea waves give way to breaking waves, and the water runs up and
+  // down the beach
   let ground = terrainH(xz);
   disp *= shoreDamp(-ground);
-  disp.y += swash(-ground);
+  if (beachOn() && ground > -14.0) { disp.y += surf(-ground, xz).h; }
+  disp.y += swash(-ground, xz);
   var o: VSOut;
   let world = vec3f(xz.x + disp.x, disp.y, xz.y + disp.z);
   o.rel = world - F.camPos.xyz;
@@ -140,6 +142,20 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
     jzz += dv.w;
     jxz += av.w;
     cov += vec3f(max(mv.x - dv.x * dv.x, 0.0), max(mv.y - dv.y * dv.y, 0.0), mv.z - dv.x * dv.y);
+  }
+  // slope of the breaking waves: their height changes with depth, so its gradient follows
+  // the slope of the sea bed
+  let depth = -in.ground;
+  var sf: Surf;
+  let inSurf = beachOn() && depth < 14.0;
+  if (inSurf) {
+    sf = surf(depth, xz);
+    let e = 0.5;
+    let gD = -vec2f(terrainH(xz + vec2f(e, 0.0)) - terrainH(xz - vec2f(e, 0.0)),
+                    terrainH(xz + vec2f(0.0, e)) - terrainH(xz - vec2f(0.0, e))) / (2.0 * e);
+    // capped: d(phase)/d(depth) grows without bound at the waterline
+    let ss = sf.dhdd * gD;
+    s += ss * min(1.0, 0.35 / max(length(ss), 1e-6));
   }
   let dist = length(in.rel);
   let V = -in.rel / dist;
@@ -244,16 +260,17 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   // freshly broken crests: dense, almost opaque core
   foamMask = max(foamMask, smoothstep(0.35, 0.9, fwl.g) * smoothstep(0.25, 0.6, pat + 0.25) * 0.95);
   // ---- shore ----
-  // surf lines rolling in over the shallows, a foam fringe where the water meets the sand,
-  // and the sand showing through thin water
-  let depth = -in.ground;
+  // whitewater on the breaking crests and lingering foam through the surf zone, a thin cap
+  // on crests about to break, a foam fringe where the water meets the sand, and the sand
+  // showing through thin water
   let waterD = in.rel.y + F.camPos.y - in.ground;
   var edge = 0.0;
-  if (beachOn() && depth < 8.0) {
-    let ph = shorePhase(depth);
-    let surf = smoothstep(0.72, 1.0, sin(ph)) * smoothstep(0.25, 1.0, depth) * (1.0 - smoothstep(2.5, 6.0, depth));
+  if (inSurf) {
+    let ph = shorePhase(depth, xz);
+    let white = sf.broken * (smoothstep(0.45, 0.9, sf.crest) + 0.25) * smoothstep(0.0, 0.3, depth) +
+                (1.0 - sf.broken) * smoothstep(0.93, 1.0, sf.crest) * (1.0 - smoothstep(F.windP[1].w * 1.6, F.windP[1].w * 3.0, depth)) * 0.6;
     edge = 1.0 - smoothstep(0.0, 0.1 + 0.08 * max(cos(ph), 0.0), waterD);
-    cover = max(cover, surf * 0.85 + edge * 0.7);
+    cover = max(cover, white * 0.9 + edge * 0.7);
     let shallowFoam = smoothstep(0.2, 0.75, cover) * smoothstep(0.3, 0.8, pat + 0.15);
     foamMask = max(foamMask, shallowFoam * 0.9);
     let bed = vec3f(0.5, 0.46, 0.36) * (sunE * max(Ld.y, 0.0) * 0.25 + skyHemi * 0.9) + vec3f(0.0, 0.04, 0.035) * skyUp;
@@ -296,7 +313,7 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   let hz = normalize(vec3f(-V.x, 0.002, -V.z));
   let fogCol = skyAtmo(hz);
   col = col * T + fogCol * (1.0 - T);
-  return vec4f(col, 1.0);
+  return vec4f(min(col, vec3f(6.0e4)), 1.0);
 }
 `;
 
@@ -324,7 +341,9 @@ fn main() {
     x0 = goal - d.xz;
   }
   let ground = terrainH(goal);
-  outH[0] = dispAt(x0).y * shoreDamp(-ground) + swash(-ground);
+  var hs = dispAt(x0).y * shoreDamp(-ground) + swash(-ground, goal);
+  if (beachOn() && ground > -14.0) { hs += surf(-ground, goal).h; }
+  outH[0] = hs;
   outH[1] = ground;
 }
 `;

@@ -38,6 +38,8 @@ export function createSoundscape(P) {
   }
 
   function build() {
+    // iPhone: play as media, so the ring/silent switch does not mute the page (Safari 17+)
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* not supported */ }
     ac = new AudioContext();
     master = gainNode(0); master.connect(ac.destination);
     oceanBus = gainNode(S.ocean); oceanBus.connect(master);
@@ -173,6 +175,8 @@ export function createSoundscape(P) {
     get mode() { return S.mode; },
     setOn,
     toggle() { setOn(!S.on); },
+    // phones suspend audio when the screen locks or the page is hidden; call from a gesture
+    resume() { if (S.on && ac && ac.state !== 'running') ac.resume(); },
     setOcean(v) { S.ocean = v; if (ac) oceanBus.gain.setTargetAtTime(v, ac.currentTime, 0.1); },
     setMusic(v) { S.music = v; if (ac) musicBus.gain.setTargetAtTime(v, ac.currentTime, 0.1); },
     setMode(mode) { S.mode = mode; if (ac) startMusic(); },

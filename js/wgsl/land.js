@@ -12,8 +12,9 @@ import { ASSET_META } from '../assets.js';
 
 // The camera starts on the sand looking out to sea (-Z). The waterline crosses the view
 // SHORE_Z metres from the origin and curves seaward on both sides into a bay; a near headland
-// on the left and a farther one on the right close the cove ~460 m out to sea. F.windP[1] = (swell angular frequency, swash amplitude,
-// beach on/off, -). Requires NOISE_WGSL (gnoise) and F.
+// on the left and a farther one on the right close the cove ~460 m out to sea.
+// F.windP[1] = (swell angular frequency, swash amplitude, beach on/off, breaker height).
+// Requires NOISE_WGSL (gnoise) and F.
 export const SHORE_WGSL = /* wgsl */ `
 const SHORE_Z: f32 = -14.0;
 // slightly left of the sunset and narrow enough in angle to stay in a phone's portrait view
@@ -44,16 +45,50 @@ fn terrainH(p: vec2f) -> f32 {
   return max(h + hill, islet);
 }
 
-// Waves shrink as the water gets shallow, so the sea meets the sand calmly.
-fn shoreDamp(depth: f32) -> f32 { return smoothstep(0.2, 7.0, depth); }
+// The open-sea (FFT) waves fade out in the shallows; the breaking waves below take over.
+fn shoreDamp(depth: f32) -> f32 { return smoothstep(0.5, 9.0, depth); }
 
-// Phase of the swell arriving at the beach: crests move towards shallower water.
-fn shorePhase(depth: f32) -> f32 { return F.windP[1].x * F.camPos.w + depth * 1.6; }
+// Phase of the swell arriving at the beach. In water of depth d a wave travels at sqrt(g d),
+// so the crests slow down and crowd together as they come in (travel time to the waterline
+// integrated over the 1:22 beach).
+// The crests are not ruler-straight: along the beach they arrive a little earlier or later.
+fn shorePhase(depth: f32, xz: vec2f) -> f32 {
+  let wobble = 1.1 * gnoise(vec2f(xz.x * 0.018, 3.7)) + 0.35 * gnoise(xz * vec2f(0.06, 0.02) + 11.0);
+  return F.windP[1].x * (F.camPos.w + 2.0 * sqrt(max(depth, 0.0)) / (BEACH_SLOPE * 3.132)) + wobble;
+}
+// Waves come in sets, and are bigger in some stretches of the beach than in others.
+fn setSize(xz: vec2f) -> f32 {
+  return (0.8 + 0.2 * sin(F.windP[1].x * F.camPos.w * 0.137)) * (0.8 + 0.4 * gnoise(vec2f(xz.x * 0.025, 9.1)));
+}
+
+// Breaking waves: they grow and steepen as the water shoals, break where the depth is about
+// 1.3 times their height (F.windP[1].w), and run on to the sand as a lower, foaming bore.
+// h = height, dhdd = d(height)/d(depth), crest = 0..1 position in the wave (1 = crest),
+// broken = how far into the surf zone (0 before breaking, 1 well inside it).
+struct Surf { h: f32, dhdd: f32, crest: f32, broken: f32 };
+fn surf(depth: f32, xz: vec2f) -> Surf {
+  var o: Surf;
+  let H = F.windP[1].w * setSize(xz);
+  let dB = 1.3 * H;
+  let ph = shorePhase(depth, xz);
+  // skewed so the shoreward face is steep and the back gentle, with long flat troughs
+  let sk = ph + 0.55 * cos(ph);
+  let p = 0.5 + 0.5 * sin(sk);
+  // (on the sand itself only the swash runs up: the bore has spent itself by then)
+  let amp = H * select(0.3 + 0.7 * max(depth, 0.0) / dB, 1.0 - smoothstep(dB, 14.0, depth), depth > dB) * smoothstep(0.0, 0.4, depth);
+  o.h = amp * (p * p * p - 0.2);
+  let dpdd = F.windP[1].x / (BEACH_SLOPE * 3.132 * sqrt(max(depth, 0.05)));
+  o.dhdd = amp * 1.5 * p * p * cos(sk) * (1.0 - 0.55 * sin(ph)) * dpdd * step(0.0, depth);
+  o.crest = p;
+  o.broken = smoothstep(dB * 1.35, dB * 0.85, depth);
+  return o;
+}
 
 // Run-up and backwash: the water level in the shallows and on the sand rises and falls.
-fn swash(depth: f32) -> f32 {
+fn swash(depth: f32, xz: vec2f) -> f32 {
   let w = 1.0 - smoothstep(0.0, 2.5, depth);
-  return F.windP[1].y * sin(shorePhase(depth)) * w;
+  // the swash is one sheet of water moving together, so it takes the phase at the waterline
+  return F.windP[1].y * setSize(xz) * sin(shorePhase(0.0, xz)) * w;
 }
 `;
 
@@ -218,7 +253,20 @@ fn fresnelW(c: f32) -> f32 {
   let reachUp = F.windP[1].y * 1.2;
   let wet = 1.0 - smoothstep(reachUp * 0.4, reachUp * 1.4, h);
   let sandy = (1.0 - grass) * (1.0 - rock) * (1.0 - smoothstep(4.0, 8.0, h));
-  alb = mix(alb, wetT, wet * sandy);
+
+  // freshly washed sand: at the waterline the water level is A sin(w t). Sand at height h was
+  // last uncovered when the falling water passed it; it keeps a shiny film of water for a few
+  // seconds after, and the top of each run-up leaves a line of foam bubbles that fades
+  let A = max(F.windP[1].y * setSize(p), 1e-3);
+  let w = max(F.windP[1].x, 1e-3);
+  let off = 3.14159265 - asin(clamp(h / A, -1.0, 1.0));
+  let since = fract((shorePhase(0.0, p) - off) / 6.2831853) * 6.2831853 / w;
+  let reached = (1.0 - smoothstep(A * 0.95, A * 1.05, h)) * sandy;
+  let film = reached * exp(-since / 2.5);
+  let laceN = smoothstep(0.05, 0.35, gnoise(p * 9.0) + 0.5 * gnoise(p * 23.0));
+  let lace = reached * smoothstep(A * 0.6, A * 0.95, h) * exp(-since / 6.0) * laceN;
+  let wetAll = max(wet, film);
+  alb = mix(alb, wetT, wetAll * sandy);
 
   // close-up detail on the beach: wind ripples, a line of washed-up seaweed at the high-water
   // mark, shells, starfish, pebbles and footprints
@@ -245,15 +293,20 @@ fn fresnelW(c: f32) -> f32 {
     }
   }
   alb *= 1.0 - 0.45 * wet * (1.0 - sandy);
+  alb = mix(alb, vec3f(0.8, 0.82, 0.82), lace * 0.8);
 
   let amb = skyAmbient(n);
   var col = alb * (sunE * max(dot(nd, Ld), 0.0) * 0.318 + amb * 0.9);
-  if (wet > 0.0) {
+  // damp sand has a soft sheen; the water film left by the backwash is a mirror for the sky
+  // and the low sun
+  let gloss = max(wet * 0.55, film) * (1.0 - lace);
+  if (gloss > 0.0) {
     let nW = normalize(mix(n, vec3f(0.0, 1.0, 0.0), 0.7));
     var R = reflect(-V, nW);
     R.y = abs(R.y);
-    let refl = textureSampleLevel(envCube, sampC, R, 2.0).rgb;
-    col += refl * fresnelW(dot(nW, V)) * wet * 0.9;
+    let refl = textureSampleLevel(envCube, sampC, R, mix(2.5, 0.5, film)).rgb;
+    let glint = sunE * pow(max(dot(R, Ld), 0.0), 600.0) * film * 4.0;
+    col += (refl + glint) * fresnelW(dot(nW, V)) * gloss;
   }
   return vec4f(aerial(col, in.rel), 1.0);
 }

@@ -45,7 +45,8 @@ export const P = {
   veil: 0.36,
   bloom: 0.10,
   beach: 0,            // sandy cove with headlands and seagulls
-  seaDist: 12,         // m from the waterline where the camera sits on the beach
+  seaDist: 6,          // m from the waterline where the camera sits on the beach
+  crabs: 0,            // little crabs on the sand (off: they did not look convincing)
 };
 // Named starting points for P (?preset=original picks the upstream look). The first one loads
 // by default; the panel's preset menu switches between them.
@@ -738,8 +739,9 @@ async function main() {
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
     f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed;
-    // shore: swell angular frequency, swash amplitude (m), beach on/off
+    // shore: swell angular frequency, swash amplitude (m), beach on/off, breaker height (m)
     f[60] = Math.sqrt(9.81 * 2 * Math.PI / P.swellLength); f[61] = 0.1 + 0.06 * P.swellHs; f[62] = P.beach;
+    f[63] = 0.35 + 0.25 * P.swellHs;
     f[64] = R0; f[65] = GRID; f[66] = FOAM_LEVEL_SIZE[0]; f[67] = FOAM_LEVEL_SIZE[1];
     f[68] = P.exposure; f[69] = P.bloom; f[70] = frameIndex; f[71] = DBG;
     f[72] = P.haze; f[73] = Math.max(cam.y, 10) * 0.001; f[74] = P.veil; f[75] = 0.9;
@@ -810,6 +812,7 @@ async function main() {
     ['bloom', '光暈', 0, 0.3, 0.001, ''],
     ['beach', '沙灘與景物', 0, 1, 1, 'cam'],
     ['seaDist', '離海距離 (m)', 3, 40, 1, 'cam'],
+    ['crabs', '小螃蟹', 0, 1, 1, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const val = document.createElement('output');
@@ -886,15 +889,19 @@ async function main() {
     navigator.wakeLock.request('screen').then((l) => { wakeLock = l; l.addEventListener('release', () => { wakeLock = null; }); }, () => {});
   };
   document.addEventListener('visibilitychange', keepAwake);
+  // Browsers only let a page start audio from a gesture that "activates" it: a key, a mouse
+  // press, or on touch screens the finger lifting (pointerup/touchend) - not pointerdown.
+  const GESTURES = ['pointerup', 'touchend', 'click', 'keydown'];
   const firstGesture = (e) => {
-    removeEventListener('pointerdown', firstGesture);
-    removeEventListener('keydown', firstGesture);
+    for (const ev of GESTURES) removeEventListener(ev, firstGesture);
     hint.classList.add('gone');
     keepAwake();
     if (qs.get('sound') !== '0' && !sound.on && e.target !== bSound) { sound.setOn(true); syncSound(); }
   };
-  addEventListener('pointerdown', firstGesture);
-  addEventListener('keydown', firstGesture);
+  for (const ev of GESTURES) addEventListener(ev, firstGesture);
+  // and get it going again after the phone was locked or the page was in the background
+  for (const ev of ['pointerup', 'touchend']) addEventListener(ev, () => sound.resume());
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sound.resume(); });
 
   const hudFps = document.getElementById('fps');
 
@@ -1066,9 +1073,11 @@ async function main() {
       rp.setPipeline(sceneryPipe);
       rp.setBindGroup(0, bgScenery);
       rp.draw(SCENERY_VERTS, 2);
-      rp.setPipeline(crabPipe);
-      rp.setBindGroup(0, bgCrabs);
-      rp.draw(CRAB_VERTS, CRAB_COUNT);
+      if (P.crabs) {
+        rp.setPipeline(crabPipe);
+        rp.setBindGroup(0, bgCrabs);
+        rp.draw(CRAB_VERTS, CRAB_COUNT);
+      }
     }
     rp.setPipeline(skyPipe);
     rp.setBindGroup(0, bgSky);
