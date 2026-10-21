@@ -259,26 +259,31 @@ fn cloudFbm(p: vec2f, fp: f32, oct: i32, billow: f32) -> f32 {
 fn lowEdge(q: vec2f, fp: f32, oct: i32) -> f32 {
   let t = F.cloudP.w;
   var p = q * 0.38 + vec2f(t * 0.004, t * 0.0012);
+  // two levels of domain warping tear the shapes apart, so they read as vapour being pulled
+  // about by the wind rather than as smooth blobs
   let w = vec2f(gnoise(p * 0.3 + vec2f(1.7, 9.2)), gnoise(p * 0.3 + vec2f(8.3, 2.8)));
-  p += w * 1.4;
-  // slightly elongated cells (cloud streets), mildly billowy small scales for ragged edges
-  let base = cloudFbm(p * vec2f(1.0, 1.7), fp * 0.65, oct, 0.35) * 1.3 + 0.5;
+  p += w * 1.9;
+  p += vec2f(gnoise(p * 1.3 + vec2f(4.1, 0.6)), gnoise(p * 1.3 + vec2f(2.2, 7.9))) * 0.45;
+  // slightly elongated cells (cloud streets), billowy small scales for ragged, frayed edges
+  let base = cloudFbm(p * vec2f(1.0, 1.4), fp * 0.65, oct, 0.6) * 1.35 + 0.5;
   let large = gnoise(q * 0.05 + vec2f(3.1, 1.3)) * 0.7;
   return base + large - (1.0 - F.cloudP.y);
 }
-fn lowSoft(fp: f32) -> f32 { return 0.38 + min(fp * 0.65, 1.0) * 0.3; }
+fn lowSoft(fp: f32) -> f32 { return 0.62 + min(fp * 0.65, 1.0) * 0.3; }
 fn lowDensity(q: vec2f, fp: f32, oct: i32) -> f32 {
   return clamp(lowEdge(q, fp, oct) / lowSoft(fp), 0.0, 1.0);
 }
 fn highEdge(q: vec2f, fp: f32, oct: i32) -> f32 {
   let t = F.cloudP.w;
-  // altostratus deck: smooth, slightly fibrous
-  let p = CLOUD_ROT * (q * vec2f(0.09, 0.20)) + vec2f(t * 0.0015, 0.0);
-  let n = cloudFbm(p, fp * 0.2, oct, 0.0) * 1.25 + 0.5;
+  // high cloud: thin, combed cirrus fibres drawn out along the wind, not smooth lenses
+  var p = CLOUD_ROT * (q * vec2f(0.07, 0.28)) + vec2f(t * 0.0015, 0.0);
+  p += vec2f(gnoise(p * 0.4 + vec2f(5.0, 1.0)), gnoise(p * 0.4 + vec2f(2.0, 8.0))) * vec2f(1.6, 0.5);
+  let n = cloudFbm(p, fp * 0.2, oct, 0.0) * 1.1 + 0.5;
+  let fibre = 1.0 - abs(gnoise(p * vec2f(0.6, 7.0) + vec2f(3.3, 0.0)));
   let big = gnoise(q * 0.012 + vec2f(7.0, 3.0)) * 0.6;
-  return n + big - (1.0 - F.atmo.z);
+  return n * 0.75 + (fibre - 0.55) * 0.7 + big - (1.0 - F.atmo.z);
 }
-fn highSoft(fp: f32) -> f32 { return 0.85 + min(fp * 0.2, 1.0) * 0.3; }
+fn highSoft(fp: f32) -> f32 { return 1.3 + min(fp * 0.2, 1.0) * 0.3; }
 fn highDensity(q: vec2f, fp: f32, oct: i32) -> f32 {
   return clamp(highEdge(q, fp, oct) / highSoft(fp), 0.0, 1.0);
 }
