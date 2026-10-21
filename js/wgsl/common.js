@@ -30,6 +30,7 @@ struct Frame {
   fogExt:   vec4f,     // rgb extinction per metre near sea level
   cloudP:   vec4f,     // altitude km, coverage, optical density, wind time
   night:    vec4f,     // star visibility, moon is the light (0/1), -, breathing phase offset (rad)
+  extra:    vec4f,     // blue tears strength (already scaled by darkness), -, -, -
 };
 `;
 

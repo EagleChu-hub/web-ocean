@@ -5,6 +5,7 @@
 //   PALMS       photographed coconut palms on billboards along both sides of the beach
 //   LIGHTHOUSE  a photographed lighthouse on an islet in the bay with a rotating beam (BEAM)
 //   SCENERY     photographed coast mountains and a far coastline on the horizon
+//   BOAT        a sailboat silhouette drifting across the bay
 //   CRABS       photographed ghost crabs dashing sideways across the sand
 import { FRAME_WGSL, ATMO_CORE_WGSL, ENV_MIPS } from './common.js';
 import { SKY_RENDER_FUNCS } from './sky.js';
@@ -366,6 +367,11 @@ fn fresnelW(c: f32) -> f32 {
     let glint = sunE * pow(max(dot(R, Ld), 0.0), 600.0) * film * 4.0;
     col += (refl + glint) * fresnelW(dot(nW, V)) * gloss;
   }
+  // blue tears left on the wet sand by the backwash: specks that glow and fade as it drains
+  if (F.extra.x > 0.0 && film > 0.0 && dist < 30.0) {
+    let sp = smoothstep(0.55, 0.75, gnoise(p * 40.0) + 0.5 * gnoise(p * 97.0));
+    col += vec3f(0.03, 0.45, 1.0) * sp * film * F.extra.x * 0.35;
+  }
   return vec4f(aerial(col, in.rel), 1.0);
 }
 `;
@@ -691,5 +697,58 @@ struct VO {
   let k = dot(sky, vec3f(0.2126, 0.7152, 0.0722)) * 0.9;
   let col = mix(s.rgb * k, sky, 0.15);
   return vec4f(col, smoothstep(0.1, 0.6, s.a));
+}
+`;
+
+// A small sailboat far out in the bay, drifting slowly from left to right across the sunset.
+// At 1.3 km it is a silhouette against the bright sea, so it is drawn as one: hull, mast,
+// mainsail and jib in the boat's own plane facing the camera, rocking gently, with a little
+// light at the masthead after dark. It fades in and out of the haze at the ends of its run.
+// Vertex table: x along the hull (bow +x), y up (m); w = part (0 hull, 1 sail, 2 mast, 3 light).
+export const BOAT_VERTS = 21;
+export const BOAT = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + LAND_LIGHT + /* wgsl */ `
+const BV = array<vec4f, ${21}>(
+  vec4f(-4.0, 0.8, 0.0, 0.0), vec4f(4.4, 0.9, 0.0, 0.0), vec4f(3.3, -0.4, 0.0, 0.0),
+  vec4f(-4.0, 0.8, 0.0, 0.0), vec4f(3.3, -0.4, 0.0, 0.0), vec4f(-3.4, -0.3, 0.0, 0.0),
+  vec4f(-0.3, 1.1, 0.0, 1.0), vec4f(-3.4, 1.3, 0.0, 1.0), vec4f(-0.3, 10.6, 0.0, 1.0),
+  vec4f(0.1, 1.1, 0.0, 1.0), vec4f(3.9, 1.0, 0.0, 1.0), vec4f(0.0, 9.8, 0.0, 1.0),
+  vec4f(-0.32, 0.8, 0.0, 2.0), vec4f(-0.16, 0.8, 0.0, 2.0), vec4f(-0.16, 11.4, 0.0, 2.0),
+  vec4f(-0.32, 0.8, 0.0, 2.0), vec4f(-0.16, 11.4, 0.0, 2.0), vec4f(-0.32, 11.4, 0.0, 2.0),
+  vec4f(-0.24, 11.9, 0.0, 3.0), vec4f(-0.55, 11.4, 0.0, 3.0), vec4f(0.07, 11.4, 0.0, 3.0),
+);
+struct VO {
+  @builtin(position) pos: vec4f,
+  @location(0) rel: vec3f,
+  @location(1) @interpolate(flat) part: f32,
+  @location(2) @interpolate(flat) fade: f32,
+};
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
+  let t = F.camPos.w;                       // loops every 600 s: one crossing per loop
+  let run = t / 600.0;
+  let c = vec3f(-480.0 + 960.0 * run, 0.0, -1300.0);
+  let v = BV[vi];
+  let roll = 0.05 * sin(t * 0.7) + 0.02 * sin(t * 1.9);
+  let lp = vec2f(v.x * cos(roll) - v.y * sin(roll), v.x * sin(roll) + v.y * cos(roll));
+  let right = normalize(vec3f(F.camRight.x, 0.0, F.camRight.z));
+  let world = c + right * lp.x + vec3f(0.0, lp.y + 0.25 * sin(t * 0.9), 0.0);
+  var o: VO;
+  o.rel = world - F.camPos.xyz;
+  o.pos = F.viewProj * vec4f(o.rel, 1.0);
+  o.part = v.w;
+  o.fade = smoothstep(0.0, 0.08, run) * smoothstep(1.0, 0.92, run);
+  return o;
+}
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let amb = skyAmbient(vec3f(0.0, 1.0, 0.0));
+  var col = amb * 0.12;
+  if (in.part > 0.5 && in.part < 1.5) {
+    // the low sun behind the sails shines through them a little
+    col = amb * 0.3 + sunIlluminance() * sunVis[0] * 0.004;
+  }
+  if (in.part > 2.5) {
+    col = vec3f(1.0, 0.9, 0.7) * 6.0 * F.night.x;
+    if (F.night.x <= 0.0) { col = amb * 0.12; }
+  }
+  return vec4f(aerial(col, in.rel), in.fade);
 }
 `;

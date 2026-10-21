@@ -108,6 +108,7 @@ struct Frame {
   fogExt:   vec4f,     // rgb extinction per metre near sea level
   cloudP:   vec4f,     // altitude km, coverage, optical density, wind time
   night:    vec4f,     // star visibility, moon is the light (0/1), -, breathing phase offset (rad)
+  extra:    vec4f,     // blue tears strength (already scaled by darkness), -, -, -
 };
 `;
 
@@ -1174,6 +1175,7 @@ fn main(@builtin(local_invocation_index) k: u32) {
 //   PALMS       photographed coconut palms on billboards along both sides of the beach
 //   LIGHTHOUSE  a photographed lighthouse on an islet in the bay with a rotating beam (BEAM)
 //   SCENERY     photographed coast mountains and a far coastline on the horizon
+//   BOAT        a sailboat silhouette drifting across the bay
 //   CRABS       photographed ghost crabs dashing sideways across the sand
 
 
@@ -1534,6 +1536,11 @@ fn fresnelW(c: f32) -> f32 {
     let glint = sunE * pow(max(dot(R, Ld), 0.0), 600.0) * film * 4.0;
     col += (refl + glint) * fresnelW(dot(nW, V)) * gloss;
   }
+  // blue tears left on the wet sand by the backwash: specks that glow and fade as it drains
+  if (F.extra.x > 0.0 && film > 0.0 && dist < 30.0) {
+    let sp = smoothstep(0.55, 0.75, gnoise(p * 40.0) + 0.5 * gnoise(p * 97.0));
+    col += vec3f(0.03, 0.45, 1.0) * sp * film * F.extra.x * 0.35;
+  }
   return vec4f(aerial(col, in.rel), 1.0);
 }
 `;
@@ -1862,6 +1869,59 @@ struct VO {
 }
 `;
 
+// A small sailboat far out in the bay, drifting slowly from left to right across the sunset.
+// At 1.3 km it is a silhouette against the bright sea, so it is drawn as one: hull, mast,
+// mainsail and jib in the boat's own plane facing the camera, rocking gently, with a little
+// light at the masthead after dark. It fades in and out of the haze at the ends of its run.
+// Vertex table: x along the hull (bow +x), y up (m); w = part (0 hull, 1 sail, 2 mast, 3 light).
+const BOAT_VERTS = 21;
+const BOAT = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + LAND_LIGHT + /* wgsl */ `
+const BV = array<vec4f, ${21}>(
+  vec4f(-4.0, 0.8, 0.0, 0.0), vec4f(4.4, 0.9, 0.0, 0.0), vec4f(3.3, -0.4, 0.0, 0.0),
+  vec4f(-4.0, 0.8, 0.0, 0.0), vec4f(3.3, -0.4, 0.0, 0.0), vec4f(-3.4, -0.3, 0.0, 0.0),
+  vec4f(-0.3, 1.1, 0.0, 1.0), vec4f(-3.4, 1.3, 0.0, 1.0), vec4f(-0.3, 10.6, 0.0, 1.0),
+  vec4f(0.1, 1.1, 0.0, 1.0), vec4f(3.9, 1.0, 0.0, 1.0), vec4f(0.0, 9.8, 0.0, 1.0),
+  vec4f(-0.32, 0.8, 0.0, 2.0), vec4f(-0.16, 0.8, 0.0, 2.0), vec4f(-0.16, 11.4, 0.0, 2.0),
+  vec4f(-0.32, 0.8, 0.0, 2.0), vec4f(-0.16, 11.4, 0.0, 2.0), vec4f(-0.32, 11.4, 0.0, 2.0),
+  vec4f(-0.24, 11.9, 0.0, 3.0), vec4f(-0.55, 11.4, 0.0, 3.0), vec4f(0.07, 11.4, 0.0, 3.0),
+);
+struct VO {
+  @builtin(position) pos: vec4f,
+  @location(0) rel: vec3f,
+  @location(1) @interpolate(flat) part: f32,
+  @location(2) @interpolate(flat) fade: f32,
+};
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
+  let t = F.camPos.w;                       // loops every 600 s: one crossing per loop
+  let run = t / 600.0;
+  let c = vec3f(-480.0 + 960.0 * run, 0.0, -1300.0);
+  let v = BV[vi];
+  let roll = 0.05 * sin(t * 0.7) + 0.02 * sin(t * 1.9);
+  let lp = vec2f(v.x * cos(roll) - v.y * sin(roll), v.x * sin(roll) + v.y * cos(roll));
+  let right = normalize(vec3f(F.camRight.x, 0.0, F.camRight.z));
+  let world = c + right * lp.x + vec3f(0.0, lp.y + 0.25 * sin(t * 0.9), 0.0);
+  var o: VO;
+  o.rel = world - F.camPos.xyz;
+  o.pos = F.viewProj * vec4f(o.rel, 1.0);
+  o.part = v.w;
+  o.fade = smoothstep(0.0, 0.08, run) * smoothstep(1.0, 0.92, run);
+  return o;
+}
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let amb = skyAmbient(vec3f(0.0, 1.0, 0.0));
+  var col = amb * 0.12;
+  if (in.part > 0.5 && in.part < 1.5) {
+    // the low sun behind the sails shines through them a little
+    col = amb * 0.3 + sunIlluminance() * sunVis[0] * 0.004;
+  }
+  if (in.part > 2.5) {
+    col = vec3f(1.0, 0.9, 0.7) * 6.0 * F.night.x;
+    if (F.night.x <= 0.0) { col = amb * 0.12; }
+  }
+  return vec4f(aerial(col, in.rel), in.fade);
+}
+`;
+
 // ---- js/wgsl/ocean.js ----
 // Ocean surface + sky background rendering.
 
@@ -2148,6 +2208,7 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   // showing through thin water
   let waterD = in.rel.y + F.camPos.y - in.ground;
   var edge = 0.0;
+  var glow = 0.0;     // blue tears: plankton that light up where the water is churned
   if (inSurf) {
     let ph = shorePhase(depth, xz);
     // the curling lip: a bright white line along the shoreward face of each breaking crest
@@ -2158,6 +2219,7 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
                 (1.0 - sf.broken) * smoothstep(0.93, 1.0, sf.crest) * (1.0 - smoothstep(F.windP[1].w * 1.6, F.windP[1].w * 3.0, depth)) * 0.6;
     edge = 1.0 - smoothstep(0.0, 0.1 + 0.08 * max(cos(ph), 0.0), waterD);
     cover = max(cover, white * 0.9 + edge * 0.7);
+    glow = lip * 1.6 + trail * 0.55 + edge * 0.8;
     let shallowFoam = smoothstep(0.2, 0.75, cover) * smoothstep(0.3, 0.8, pat + 0.15);
     foamMask = max(foamMask, shallowFoam * 0.9);
     let bed = vec3f(0.5, 0.46, 0.36) * (sunE * max(Ld.y, 0.0) * 0.25 + skyHemi * 0.9) + vec3f(0.0, 0.04, 0.035) * skyUp;
@@ -2188,6 +2250,11 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   }
   var col = body * (1.0 - Fr) + refl * Fr + spec;
   col = mix(col, foamLit, foamMask * 0.95);
+  if (F.extra.x > 0.0) {
+    // brightest the moment a wave breaks, flickering in fine specks as the foam spreads
+    let speck = smoothstep(0.45, 0.85, pat) * (0.6 + 0.4 * sin(F.camPos.w * 6.0 + pat * 40.0));
+    col += vec3f(0.03, 0.45, 1.0) * glow * (0.25 + 0.75 * speck) * F.extra.x * 0.5;
+  }
   if (edge > 0.0) {
     // the last millimetres of water fade into wet sand so the waterline has no hard seam
     let wetSand = vec3f(0.32, 0.27, 0.2) * (sunE * max(Ld.y, 0.0) * 0.318 + skyHemi * 0.9);
@@ -2631,6 +2698,8 @@ const P = {
   nightAuto: 0,        // let night fall by itself over nightMin minutes
   nightMin: 10,
   breath: 0,           // breathing guide: breathe in 4 s, out 6 s, with the waves
+  blueTears: 1,        // glowing plankton in the surf after dark (Matsu's "blue tears")
+  boat: 1,             // a sailboat drifting across the bay
 };
 // Named starting points for P (?preset=original picks the upstream look). The first one loads
 // by default; the panel's preset menu switches between them.
@@ -2850,7 +2919,7 @@ async function main() {
     magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
     addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 16,
   });
-  const frameUBO = mkBuf(400, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
+  const frameUBO = mkBuf(416, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
   const sunVisBuf = mkBuf(16, GU.STORAGE, 'sun visibility');
   const transView = transLUT.createView();
   const msView = msLUT.createView();
@@ -2961,6 +3030,7 @@ async function main() {
   // Beach terrain (camera-centred polar grid) and seagulls, drawn into the main pass.
   const [landMod, gullMod, palmMod, lhMod, crabMod, sceneryMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'),
     shader(PALMS, 'palms'), shader(LIGHTHOUSE, 'lighthouse'), shader(CRABS, 'crabs'), shader(SCENERY, 'scenery')]);
+  const boatMod = await shader(BOAT, 'boat');
   const solidPipe = (module, label, alphaToCoverageEnabled = false) => device.createRenderPipelineAsync({
     label, layout: 'auto',
     vertex: { module, entryPoint: 'vs' },
@@ -2990,6 +3060,8 @@ async function main() {
   const bgPalms = bg(palmPipe, [...landRes, palmTex.createView({ dimension: '2d-array' }), sampTex], 'palms');
   const bgLH = bg(lhPipe, [...landRes, lhTex.createView(), sampTex], 'lighthouse');
   // the scenery shader reads only the frame, the sky-view LUT and its two photos
+  const boatPipe = await solidPipe(boatMod, 'boat', true);
+  const bgBoat = bg(boatPipe, landRes, 'boat');
   const bgScenery = device.createBindGroup({
     label: 'scenery', layout: sceneryPipe.getBindGroupLayout(0),
     entries: [[0, { buffer: frameUBO }], [2, skyView], [3, sampClamp], [6, mountainTex.createView()], [7, coastTex.createView()], [8, sampTex]]
@@ -3143,7 +3215,7 @@ async function main() {
   // Uniform data
   // --------------------------------------------------------------------------------------
   const simF = new Float32Array(56);
-  const frameF = new Float32Array(100);
+  const frameF = new Float32Array(104);
   const atmoF = new Float32Array(4);
   const proj = new Float32Array(16), view = new Float32Array(16), viewProj = new Float32Array(16);
   const LOOP = 600.0;  // s, spectrum time loop (frequencies quantised to it)
@@ -3362,6 +3434,8 @@ async function main() {
     f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = lightW;
     f[96] = ease((n - 0.3) / 0.45); f[97] = n > 0.5 ? 1 : 0; f[98] = moon;
     // breathing: shore crests in front of the camera peak at the end of each 4 s in-breath
+    // blue tears show only in the dark
+    f[100] = P.blueTears * f[96];
     f[99] = P.breath ? (2 * Math.PI / BREATH_T) * BREATH_IN - Math.PI / 2 : 0;
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
@@ -3444,6 +3518,8 @@ async function main() {
     ['nightAuto', '自動入夜', 0, 1, 1, ''],
     ['nightMin', '入夜時間 (分鐘)', 1, 30, 1, ''],
     ['breath', '呼吸引導', 0, 1, 1, 'spec'],
+    ['blueTears', '藍眼淚', 0, 2, 0.05, ''],
+    ['boat', '帆船', 0, 1, 1, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const val = document.createElement('output');
@@ -3707,6 +3783,11 @@ async function main() {
       rp.setPipeline(sceneryPipe);
       rp.setBindGroup(0, bgScenery);
       rp.draw(SCENERY_VERTS, 2);
+      if (P.boat) {
+        rp.setPipeline(boatPipe);
+        rp.setBindGroup(0, bgBoat);
+        rp.draw(BOAT_VERTS);
+      }
       if (P.crabs) {
         rp.setPipeline(crabPipe);
         rp.setBindGroup(0, bgCrabs);

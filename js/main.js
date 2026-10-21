@@ -9,7 +9,7 @@ import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
 import {
   LAND, LAND_RINGS, LAND_SEGS, GULLS, GULL_COUNT, GULL_VERTS, PALMS, PALM_COUNT, PALM_VERTS,
-  LIGHTHOUSE, LIGHTHOUSE_VERTS, BEAM_VERTS, CRABS, CRAB_COUNT, CRAB_VERTS, SCENERY, SCENERY_VERTS,
+  LIGHTHOUSE, LIGHTHOUSE_VERTS, BEAM_VERTS, CRABS, CRAB_COUNT, CRAB_VERTS, SCENERY, SCENERY_VERTS, BOAT, BOAT_VERTS,
 } from './wgsl/land.js';
 import { createSoundscape } from './audio.js';
 import { ASSET_URLS } from './assets.js';
@@ -51,6 +51,8 @@ export const P = {
   nightAuto: 0,        // let night fall by itself over nightMin minutes
   nightMin: 10,
   breath: 0,           // breathing guide: breathe in 4 s, out 6 s, with the waves
+  blueTears: 1,        // glowing plankton in the surf after dark (Matsu's "blue tears")
+  boat: 1,             // a sailboat drifting across the bay
 };
 // Named starting points for P (?preset=original picks the upstream look). The first one loads
 // by default; the panel's preset menu switches between them.
@@ -270,7 +272,7 @@ async function main() {
     magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
     addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 16,
   });
-  const frameUBO = mkBuf(400, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
+  const frameUBO = mkBuf(416, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
   const sunVisBuf = mkBuf(16, GU.STORAGE, 'sun visibility');
   const transView = transLUT.createView();
   const msView = msLUT.createView();
@@ -381,6 +383,7 @@ async function main() {
   // Beach terrain (camera-centred polar grid) and seagulls, drawn into the main pass.
   const [landMod, gullMod, palmMod, lhMod, crabMod, sceneryMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'),
     shader(PALMS, 'palms'), shader(LIGHTHOUSE, 'lighthouse'), shader(CRABS, 'crabs'), shader(SCENERY, 'scenery')]);
+  const boatMod = await shader(BOAT, 'boat');
   const solidPipe = (module, label, alphaToCoverageEnabled = false) => device.createRenderPipelineAsync({
     label, layout: 'auto',
     vertex: { module, entryPoint: 'vs' },
@@ -410,6 +413,8 @@ async function main() {
   const bgPalms = bg(palmPipe, [...landRes, palmTex.createView({ dimension: '2d-array' }), sampTex], 'palms');
   const bgLH = bg(lhPipe, [...landRes, lhTex.createView(), sampTex], 'lighthouse');
   // the scenery shader reads only the frame, the sky-view LUT and its two photos
+  const boatPipe = await solidPipe(boatMod, 'boat', true);
+  const bgBoat = bg(boatPipe, landRes, 'boat');
   const bgScenery = device.createBindGroup({
     label: 'scenery', layout: sceneryPipe.getBindGroupLayout(0),
     entries: [[0, { buffer: frameUBO }], [2, skyView], [3, sampClamp], [6, mountainTex.createView()], [7, coastTex.createView()], [8, sampTex]]
@@ -563,7 +568,7 @@ async function main() {
   // Uniform data
   // --------------------------------------------------------------------------------------
   const simF = new Float32Array(56);
-  const frameF = new Float32Array(100);
+  const frameF = new Float32Array(104);
   const atmoF = new Float32Array(4);
   const proj = new Float32Array(16), view = new Float32Array(16), viewProj = new Float32Array(16);
   const LOOP = 600.0;  // s, spectrum time loop (frequencies quantised to it)
@@ -782,6 +787,8 @@ async function main() {
     f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = lightW;
     f[96] = ease((n - 0.3) / 0.45); f[97] = n > 0.5 ? 1 : 0; f[98] = moon;
     // breathing: shore crests in front of the camera peak at the end of each 4 s in-breath
+    // blue tears show only in the dark
+    f[100] = P.blueTears * f[96];
     f[99] = P.breath ? (2 * Math.PI / BREATH_T) * BREATH_IN - Math.PI / 2 : 0;
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
@@ -864,6 +871,8 @@ async function main() {
     ['nightAuto', '自動入夜', 0, 1, 1, ''],
     ['nightMin', '入夜時間 (分鐘)', 1, 30, 1, ''],
     ['breath', '呼吸引導', 0, 1, 1, 'spec'],
+    ['blueTears', '藍眼淚', 0, 2, 0.05, ''],
+    ['boat', '帆船', 0, 1, 1, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const val = document.createElement('output');
@@ -1127,6 +1136,11 @@ async function main() {
       rp.setPipeline(sceneryPipe);
       rp.setBindGroup(0, bgScenery);
       rp.draw(SCENERY_VERTS, 2);
+      if (P.boat) {
+        rp.setPipeline(boatPipe);
+        rp.setBindGroup(0, bgBoat);
+        rp.draw(BOAT_VERTS);
+      }
       if (P.crabs) {
         rp.setPipeline(crabPipe);
         rp.setBindGroup(0, bgCrabs);

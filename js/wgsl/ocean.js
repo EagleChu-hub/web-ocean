@@ -284,6 +284,7 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   // showing through thin water
   let waterD = in.rel.y + F.camPos.y - in.ground;
   var edge = 0.0;
+  var glow = 0.0;     // blue tears: plankton that light up where the water is churned
   if (inSurf) {
     let ph = shorePhase(depth, xz);
     // the curling lip: a bright white line along the shoreward face of each breaking crest
@@ -294,6 +295,7 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
                 (1.0 - sf.broken) * smoothstep(0.93, 1.0, sf.crest) * (1.0 - smoothstep(F.windP[1].w * 1.6, F.windP[1].w * 3.0, depth)) * 0.6;
     edge = 1.0 - smoothstep(0.0, 0.1 + 0.08 * max(cos(ph), 0.0), waterD);
     cover = max(cover, white * 0.9 + edge * 0.7);
+    glow = lip * 1.6 + trail * 0.55 + edge * 0.8;
     let shallowFoam = smoothstep(0.2, 0.75, cover) * smoothstep(0.3, 0.8, pat + 0.15);
     foamMask = max(foamMask, shallowFoam * 0.9);
     let bed = vec3f(0.5, 0.46, 0.36) * (sunE * max(Ld.y, 0.0) * 0.25 + skyHemi * 0.9) + vec3f(0.0, 0.04, 0.035) * skyUp;
@@ -324,6 +326,11 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   }
   var col = body * (1.0 - Fr) + refl * Fr + spec;
   col = mix(col, foamLit, foamMask * 0.95);
+  if (F.extra.x > 0.0) {
+    // brightest the moment a wave breaks, flickering in fine specks as the foam spreads
+    let speck = smoothstep(0.45, 0.85, pat) * (0.6 + 0.4 * sin(F.camPos.w * 6.0 + pat * 40.0));
+    col += vec3f(0.03, 0.45, 1.0) * glow * (0.25 + 0.75 * speck) * F.extra.x * 0.5;
+  }
   if (edge > 0.0) {
     // the last millimetres of water fade into wet sand so the waterline has no hard seam
     let wetSand = vec3f(0.32, 0.27, 0.2) * (sunE * max(Ld.y, 0.0) * 0.318 + skyHemi * 0.9);
