@@ -497,7 +497,8 @@ const PALM_AT = array<vec4f, ${PALM_LAYOUT.length}>(${PALM_LAYOUT.map((p) => `ve
   let s = unpremul(textureSample(palmTex, sampT, in.uv, in.layer));
   // the photo already carries the backlit sunset look: scale it to the scene's light level
   let lum = vec3f(0.2126, 0.7152, 0.0722);
-  let k = dot(skyAmbient(vec3f(0.0, 1.0, 0.0)), lum) * 1.3 + dot(sunIlluminance() * sunVis[0], lum) * 0.05;
+  // by moonlight the palms are mostly dark silhouettes
+  let k = (dot(skyAmbient(vec3f(0.0, 1.0, 0.0)), lum) * 1.3 + dot(sunIlluminance() * sunVis[0], lum) * 0.05) * (1.0 - 0.7 * F.night.z);
   return vec4f(aerial(s.rgb * k, in.rel), smoothstep(0.2, 0.7, s.a));
 }
 `;
@@ -590,7 +591,7 @@ struct BO {
   let V = normalize(in.rel);
   let face = pow(abs(dot(normalize(in.nrm), V)), 2.0);
   let k = face * (1.0 - in.along) * (1.0 - in.along) * duskK();
-  return vec4f(vec3f(1.0, 0.86, 0.6) * k * 0.35, 0.0);
+  return vec4f(vec3f(1.0, 0.86, 0.6) * k * 0.15, 0.0);
 }
 `;
 

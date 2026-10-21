@@ -777,7 +777,7 @@ async function main() {
     const moon = ease((n - 0.5) / 0.35);
     let elev = P.sunElev + (-7 - P.sunElev) * ease(n / 0.55), azim = P.sunAzim, lightW = 14.0;
     if (n > 0.5) { elev = 4 + 10 * moon; azim = -24; lightW = 14.0 * 0.02 * moon; }
-    nightExposure = 1 + 1.8 * ease(n / 0.55) + 2.5 * moon;
+    nightExposure = 1 + 4 * ease(n / 0.55) - 2.8 * moon;
     const se = elev * D2R, sa = azim * D2R;
     f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = lightW;
     f[96] = ease((n - 0.3) / 0.45); f[97] = n > 0.5 ? 1 : 0; f[98] = moon;

@@ -35,7 +35,10 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   let aa = vec2f(fwidth(el), fwidth(eh));
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
-  var L = skyAtmo(d2) * (1.0 - cl.a) + cl.rgb + sunDisk(dir) * sunT;
+  // after sunset the clouds lose the sun's light and go dusky grey instead of glowing red
+  let cfade = select(1.0, mix(0.1, 1.0, smoothstep(-0.11, -0.01, F.sunDir.y)), F.night.y < 0.5);
+  let clc = mix(vec3f(dot(cl.rgb, vec3f(0.2126, 0.7152, 0.0722))), cl.rgb, cfade) * cfade;
+  var L = skyAtmo(d2) * (1.0 - cl.a) + clc + sunDisk(dir) * sunT;
   // stars come out as the sky darkens: one per cell of a grid on the sky, of varying
   // brightness, twinkling a little, fading towards the hazy horizon and behind clouds
   if (F.night.x > 0.0 && dir.y > 0.0) {
