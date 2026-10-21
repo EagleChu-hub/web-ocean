@@ -1281,6 +1281,10 @@ const LAND_LIGHT = /* wgsl */ `
 const ENV_MAXMIP: f32 = ${ENV_MIPS - 1}.0;
 // photo textures are stored premultiplied (see imageTexture in main.js)
 fn unpremul(c: vec4f) -> vec4f { return vec4f(c.rgb / max(c.a, 1e-3), c.a); }
+// the photos are lit by a low sun; once it has set (or by moonlight) they go towards silhouettes
+fn photoDusk() -> f32 {
+  return select(mix(0.2, 1.0, smoothstep(-0.1, 0.02, F.sunDir.y)), 1.0 - 0.7 * F.night.z, F.night.y > 0.5);
+}
 fn skyAmbient(n: vec3f) -> vec3f {
   let up = textureSampleLevel(envCube, sampC, vec3f(0.0, 1.0, 0.0), ENV_MAXMIP).rgb;
   let side = textureSampleLevel(envCube, sampC, normalize(vec3f(n.x, 0.35, n.z) + vec3f(1e-4, 0.0, 0.0)), ENV_MAXMIP - 1.0).rgb;
@@ -1666,7 +1670,7 @@ const PALM_AT = array<vec4f, ${PALM_LAYOUT.length}>(${PALM_LAYOUT.map((p) => `ve
   // the photo already carries the backlit sunset look: scale it to the scene's light level
   let lum = vec3f(0.2126, 0.7152, 0.0722);
   // by moonlight the palms are mostly dark silhouettes
-  let k = (dot(skyAmbient(vec3f(0.0, 1.0, 0.0)), lum) * 1.3 + dot(sunIlluminance() * sunVis[0], lum) * 0.05) * (1.0 - 0.7 * F.night.z);
+  let k = (dot(skyAmbient(vec3f(0.0, 1.0, 0.0)), lum) * 1.3 + dot(sunIlluminance() * sunVis[0], lum) * 0.05) * photoDusk();
   return vec4f(aerial(s.rgb * k, in.rel), smoothstep(0.2, 0.7, s.a));
 }
 `;
@@ -1797,7 +1801,7 @@ struct VO {
   // backlit photos: scale them to the scene's light, like the palms (a little brighter: the
   // crabs are pale and sit low, lit by the bright sea and sky in front of them)
   // lit by the colour of the evening light, not only its brightness, so they sit in the scene
-  let k = skyAmbient(vec3f(0.0, 1.0, 0.0)) * 1.8 + sunIlluminance() * sunVis[0] * 0.07;
+  let k = (skyAmbient(vec3f(0.0, 1.0, 0.0)) * 1.8 + sunIlluminance() * sunVis[0] * 0.07) * photoDusk();
   return vec4f(aerial(s.rgb * k, in.rel), smoothstep(0.2, 0.7, s.a));
 }
 `;

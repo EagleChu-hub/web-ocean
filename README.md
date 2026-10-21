@@ -48,6 +48,10 @@ Sound starts with your first click, tap or key press (browsers block audio befor
 
 The sand, the shells, starfish and pebbles on it, the palm trees, the lighthouse, the ghost crabs and the mountains and coastline on the horizon come from AI-generated photos (made with ChatGPT/Gemini from prompts in this project). `tools/prepare_assets.py` makes the sand tileable, keys the green-screen palms, shells, lighthouse and horizon panoramas out, packs the shells into an atlas and writes `assets/*.webp` plus `js/assets.js`; `build.mjs` inlines them as data URLs, so `ocean.html` is still one file (about 1.7 MB now). The original source images are not in the repository.
 
+### Nightfall and the breathing guide
+
+**入夜程度** (`night`, 0–1) takes the scene from the sunset through dusk, when the stars come out and the lighthouse beam stands out, to a moonlit night; **自動入夜** lets it happen by itself over **入夜時間** minutes, and the **月光海灘** preset starts at night. **呼吸引導** (`breath=1`) shows a circle that grows for a 4 s in-breath and shrinks for a 6 s out-breath; the swell slows to a 10 s period so a wave rolls in with every in-breath and drains away with every out-breath, in the picture and in the sound.
+
 ### Phones and browsers without WebGPU
 
 On phones the mesh is lighter and the render resolution starts at 75% with the pixel ratio capped at 2; on every device the resolution then adapts between 50% and 100% to hold the frame rate. The screen is kept awake while the page is open. Where WebGPU is not available the page shows a quiet sunset screen with a button that plays the soundscape on its own.
