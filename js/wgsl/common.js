@@ -29,6 +29,7 @@ struct Frame {
   foamP:    vec4f,     // J threshold, J gain, foam intensity, lace sharpness
   fogExt:   vec4f,     // rgb extinction per metre near sea level
   cloudP:   vec4f,     // altitude km, coverage, optical density, wind time
+  night:    vec4f,     // star visibility, moon is the light (0/1), -, breathing phase offset (rad)
 };
 `;
 

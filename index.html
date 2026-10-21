@@ -32,6 +32,12 @@
           padding: 32px; text-align: center; color: #fff4e6; font: 17px/1.7 system-ui, sans-serif;
           background: linear-gradient(#2a2f4a 0%, #8a5a6a 45%, #f0a066 62%, #f6c88a 66%, #2d4a5e 67%, #12222e 100%); }
   #calm button { padding: 12px 26px; border: 0; border-radius: 26px; background: #fff4e6dd; color: #3a2a2a; font-size: 17px; }
+  #breath { position: fixed; left: max(18px, env(safe-area-inset-left)); bottom: max(78px, calc(env(safe-area-inset-bottom) + 60px));
+            width: 96px; height: 96px; display: none; align-items: center; justify-content: center; pointer-events: none; }
+  #breath div { position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid #fff4e6aa;
+                background: radial-gradient(circle, #fff4e622 0%, #fff4e60a 70%, transparent 100%);
+                box-shadow: 0 0 18px #fff4e633; will-change: transform; }
+  #breath span { color: #fff4e6; font: 14px/1 system-ui, sans-serif; letter-spacing: 2px; text-shadow: 0 1px 3px #0008; }
   #err { position: fixed; inset: 0; display: none; padding: 40px; color: #f88; font: 16px system-ui; white-space: pre-wrap; background: #000; }
 </style>
 </head>
@@ -43,6 +49,7 @@
 </div>
 <div id="panel" class="hidden"></div>
 <div id="hint"></div>
+<div id="breath"><div></div><span></span></div>
 <div id="ctl"><button id="bSound" title="聲音 (M)">🔇</button><button id="bPanel" title="設定 (H)">⚙</button></div>
 <div id="calm">
   <div>這個瀏覽器還不能顯示 3D 海面（需要 WebGPU）。<br>沒關係，閉上眼睛，聽一會兒海浪聲。</div>

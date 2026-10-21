@@ -52,9 +52,11 @@ fn shoreDamp(depth: f32) -> f32 { return smoothstep(0.5, 9.0, depth); }
 // so the crests slow down and crowd together as they come in (travel time to the waterline
 // integrated over the 1:22 beach).
 // The crests are not ruler-straight: along the beach they arrive a little earlier or later.
+// With the breathing guide on, the crests in front of the camera arrive in step with it.
 fn shorePhase(depth: f32, xz: vec2f) -> f32 {
-  let wobble = 1.1 * gnoise(vec2f(xz.x * 0.018, 3.7)) + 0.35 * gnoise(xz * vec2f(0.06, 0.02) + 11.0);
-  return F.windP[1].x * (F.camPos.w + 2.0 * sqrt(max(depth, 0.0)) / (BEACH_SLOPE * 3.132)) + wobble;
+  var wobble = 1.1 * gnoise(vec2f(xz.x * 0.018, 3.7)) + 0.35 * gnoise(xz * vec2f(0.06, 0.02) + 11.0);
+  if (F.night.w != 0.0) { wobble *= smoothstep(4.0, 25.0, abs(xz.x - F.camPos.x)); }
+  return F.windP[1].x * (F.camPos.w + 2.0 * sqrt(max(depth, 0.0)) / (BEACH_SLOPE * 3.132)) + wobble - F.night.w;
 }
 // Waves come in sets, and are bigger in some stretches of the beach than in others.
 fn setSize(xz: vec2f) -> f32 {
@@ -515,7 +517,7 @@ fn lampPos() -> vec3f { return lhBase() + vec3f(0.0, LH_H * (1.0 - LH_LAMP.y), 0
 // horizontal direction of the beam; one turn every 12 s
 fn beamDir() -> vec3f { let a = F.camPos.w * 0.5236; return vec3f(cos(a), 0.0, sin(a)); }
 // how strongly the beam stands out: hardly in daylight, clearly once the sun is low or down
-fn duskK() -> f32 { return 0.25 + 0.75 * (1.0 - smoothstep(-0.03, 0.15, F.sunDir.y)); }
+fn duskK() -> f32 { return max(0.25 + 0.75 * (1.0 - smoothstep(-0.03, 0.15, F.sunDir.y)), F.night.x); }
 fn flashK() -> f32 {
   let toCam = normalize(vec3f(F.camPos.x, 0.0, F.camPos.z) - vec3f(lampPos().x, 0.0, lampPos().z));
   let c = dot(beamDir(), toCam);

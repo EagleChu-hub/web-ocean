@@ -47,13 +47,22 @@ export const P = {
   beach: 0,            // sandy cove with headlands and seagulls
   seaDist: 6,          // m from the waterline where the camera sits on the beach
   crabs: 0,            // little ghost crabs on the sand (on in the beach preset)
+  night: 0,            // 0 = the preset's sunset, 0.5 = dusk after sunset, 1 = moonlit night
+  nightAuto: 0,        // let night fall by itself over nightMin minutes
+  nightMin: 10,
+  breath: 0,           // breathing guide: breathe in 4 s, out 6 s, with the waves
 };
 // Named starting points for P (?preset=original picks the upstream look). The first one loads
 // by default; the panel's preset menu switches between them.
 const PRESETS = {
   'Taiwan sunset': { ...P, sunElev: 5, turbidity: 0.4, windSpeed: 6, beach: 1, crabs: 1 },
+  'Moonlit night': { ...P, sunElev: 5, turbidity: 0.4, windSpeed: 6, beach: 1, crabs: 1, night: 1 },
   'Original': { ...P },
 };
+// Breathing guide: in for 4 s, out for 6 s. The swell is set to the same 10 s period while
+// it is on, so every in-breath has a wave rolling in and every out-breath its backwash.
+const BREATH_IN = 4, BREATH_T = 10;
+const swellL = () => (P.breath ? 9.81 * BREATH_T * BREATH_T / (2 * Math.PI) : P.swellLength);
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
 function fail(msg) {
@@ -261,7 +270,7 @@ async function main() {
     magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
     addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 16,
   });
-  const frameUBO = mkBuf(384, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
+  const frameUBO = mkBuf(400, GU.UNIFORM | GU.COPY_DST, 'frame ubo');
   const sunVisBuf = mkBuf(16, GU.STORAGE, 'sun visibility');
   const transView = transLUT.createView();
   const msView = msLUT.createView();
@@ -554,7 +563,7 @@ async function main() {
   // Uniform data
   // --------------------------------------------------------------------------------------
   const simF = new Float32Array(56);
-  const frameF = new Float32Array(96);
+  const frameF = new Float32Array(100);
   const atmoF = new Float32Array(4);
   const proj = new Float32Array(16), view = new Float32Array(16), viewProj = new Float32Array(16);
   const LOOP = 600.0;  // s, spectrum time loop (frequencies quantised to it)
@@ -569,7 +578,7 @@ async function main() {
     }
     for (let c = 1; c < C; c++) simF[8 + c] = simF[16 + c - 1];
     simF[40] = P.windSpeed; simF[41] = P.windDir * D2R; simF[42] = P.fetchKm * 1000; simF[43] = 3.3;
-    const ks = 2 * Math.PI / P.swellLength;
+    const ks = 2 * Math.PI / swellL();
     simF[44] = P.swellHs; simF[45] = P.swellDir * D2R; simF[46] = Math.sqrt(9.81 * ks); simF[47] = P.swellSpread;
     simF[48] = P.choppy; simF[49] = 0.0012; simF[50] = LOOP; simF[51] = 1;
     simF[54] = 2.2; simF[55] = 1.0;
@@ -712,6 +721,29 @@ async function main() {
   // Per-frame uniforms
   // --------------------------------------------------------------------------------------
   let simTime = Number(qs.get('t')) || 0;
+  let nightExposure = 1;
+
+  // the breathing circle grows while breathing in and shrinks while breathing out, and each
+  // breath starts a wave in the soundscape
+  const breathEl = document.getElementById('breath');
+  const breathRing = breathEl.querySelector('div');
+  const breathText = breathEl.querySelector('span');
+  let breathPrev = 1e9;
+  function updateBreath() {
+    sound.setBreathing(!!P.breath);
+    breathEl.style.display = P.breath && qs.get('ui') !== '0' ? 'flex' : 'none';
+    if (!P.breath) return;
+    const ph = simTime % BREATH_T;
+    if (ph < breathPrev) sound.breathWave(BREATH_IN, BREATH_T - BREATH_IN);
+    breathPrev = ph;
+    const inhale = ph < BREATH_IN;
+    const x = inhale ? ph / BREATH_IN : (ph - BREATH_IN) / (BREATH_T - BREATH_IN);
+    const e = 0.5 - 0.5 * Math.cos(Math.PI * x);
+    breathRing.style.transform = `scale(${inhale ? 0.55 + 0.45 * e : 1 - 0.45 * e})`;
+    const label = inhale ? '吸氣' : '吐氣';
+    if (breathText.textContent !== label) breathText.textContent = label;
+    breathText.style.opacity = String(Math.min(1, Math.sin(Math.PI * x) * 2.5));
+  }
   let frameIndex = 0;
 
   function writeFrame(time) {
@@ -738,16 +770,27 @@ async function main() {
     f[20] = rx * tanX; f[21] = ry * tanX; f[22] = rz * tanX; f[23] = 0;
     f[24] = ux * tanY; f[25] = uy * tanY; f[26] = uz * tanY; f[27] = 0;
     f[28] = fx; f[29] = fy; f[30] = fz; f[31] = 0;
-    const se = P.sunElev * D2R, sa = P.sunAzim * D2R;
-    f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = 14.0;
+    // Nightfall: the sun sets to 7 degrees below the horizon over the first half, then the
+    // moon rises left of where the sun went down and takes over as the light, 50 times
+    // dimmer; the exposure follows partly, so night stays night.
+    const n = P.night, ease = (x) => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+    const moon = ease((n - 0.5) / 0.35);
+    let elev = P.sunElev + (-7 - P.sunElev) * ease(n / 0.55), azim = P.sunAzim, lightW = 14.0;
+    if (n > 0.5) { elev = 4 + 10 * moon; azim = -24; lightW = 14.0 * 0.02 * moon; }
+    nightExposure = 1 + 1.8 * ease(n / 0.55) + 2.5 * moon;
+    const se = elev * D2R, sa = azim * D2R;
+    f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = lightW;
+    f[96] = ease((n - 0.3) / 0.45); f[97] = n > 0.5 ? 1 : 0; f[98] = moon;
+    // breathing: shore crests in front of the camera peak at the end of each 4 s in-breath
+    f[99] = P.breath ? (2 * Math.PI / BREATH_T) * BREATH_IN - Math.PI / 2 : 0;
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
     f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed; f[59] = P.beach && P.crabs;
     // shore: swell angular frequency, swash amplitude (m), beach on/off, breaker height (m)
-    f[60] = Math.sqrt(9.81 * 2 * Math.PI / P.swellLength); f[61] = 0.1 + 0.06 * P.swellHs; f[62] = P.beach;
+    f[60] = Math.sqrt(9.81 * 2 * Math.PI / swellL()); f[61] = 0.1 + 0.06 * P.swellHs; f[62] = P.beach;
     f[63] = 0.35 + 0.25 * P.swellHs;
     f[64] = R0; f[65] = GRID; f[66] = FOAM_LEVEL_SIZE[0]; f[67] = FOAM_LEVEL_SIZE[1];
-    f[68] = P.exposure; f[69] = P.bloom; f[70] = frameIndex; f[71] = DBG;
+    f[68] = P.exposure * nightExposure; f[69] = P.bloom; f[70] = frameIndex; f[71] = DBG;
     f[72] = P.haze; f[73] = Math.max(cam.y, 10) * 0.001; f[74] = P.veil; f[75] = 0.9;
     // deep water body scatter colour (greenish coastal water), unresolved slope variance
     f[76] = 0.016 * P.turbidity; f[77] = 0.080 * P.turbidity; f[78] = 0.096 * P.turbidity; f[79] = 0.0024;
@@ -786,7 +829,7 @@ async function main() {
   const presetNames = Object.keys(PRESETS);
   const qsPreset = (qs.get('preset') || '').toLowerCase();
   let preset = presetNames.find((n) => n.toLowerCase().startsWith(qsPreset) && qsPreset) || presetNames[0];
-  const PRESET_LABELS = { 'Taiwan sunset': '台灣夕陽沙灘', 'Original': '原版開闊海面' };
+  const PRESET_LABELS = { 'Taiwan sunset': '台灣夕陽沙灘', 'Moonlit night': '月光海灘', 'Original': '原版開闊海面' };
   const presetSel = select(presetNames.map((n) => [n, PRESET_LABELS[n] || n]), preset, (name) => { applyPreset(name); syncSliders(); });
   row('場景', presetSel);
   function applyPreset(name) {
@@ -817,6 +860,10 @@ async function main() {
     ['beach', '沙灘與景物', 0, 1, 1, 'cam'],
     ['seaDist', '離海距離 (m)', 3, 40, 1, 'cam'],
     ['crabs', '小螃蟹', 0, 1, 1, ''],
+    ['night', '入夜程度', 0, 1, 0.01, ''],
+    ['nightAuto', '自動入夜', 0, 1, 1, ''],
+    ['nightMin', '入夜時間 (分鐘)', 1, 30, 1, ''],
+    ['breath', '呼吸引導', 0, 1, 1, 'spec'],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const val = document.createElement('output');
@@ -991,6 +1038,7 @@ async function main() {
     fpsAcc += dt; fpsN++; fpsT += dt;
     if (fpsT > 0.5) {
       const fps = fpsN / fpsAcc;
+      if (P.nightAuto) for (const [key, inp, val] of sliderEls) if (key === 'night') { inp.value = P.night; val.textContent = P.night.toFixed(2); }
       adaptScale(fps, now);
       hudFps.textContent = `${fps.toFixed(0)} fps  ${(1000 / fps).toFixed(2)} ms` +
         (hasTS ? `  |  GPU ${gpuMs.toFixed(2)} ms` : '') + `  |  ${nodeCount} nodes  ${W}x${H}`;
@@ -999,6 +1047,8 @@ async function main() {
     if (fixedDt) dt = fixedDt;
     updateCamera(dt);
     simTime += dt;
+    if (P.nightAuto && P.night < 1) P.night = Math.min(1, P.night + dt / (P.nightMin * 60));
+    updateBreath();
     if (simTime > LOOP) simTime -= LOOP;
     frameIndex++;
 
@@ -1108,8 +1158,9 @@ async function main() {
       p.end();
     }
 
-    compData[0] = P.exposure; compData[1] = P.bloom; compData[2] = frameIndex % 64; compData[3] = 0.10;
-    compData[4] = 1.05; compData[5] = 1.06; compData[6] = -0.19; compData[7] = 0;
+    // at night colours fade and turn bluish, as they do to our eyes in moonlight
+    compData[0] = P.exposure * nightExposure; compData[1] = P.bloom; compData[2] = frameIndex % 64; compData[3] = 0.10;
+    compData[4] = 1.05 - 0.35 * frameF[98]; compData[5] = 1.06; compData[6] = -0.19 - 0.12 * frameF[98]; compData[7] = 0;
     device.queue.writeBuffer(compUBO, 0, compData);
     const swapTex = ctx.getCurrentTexture();
     compPass.colorAttachments[0].view = swapTex.createView();

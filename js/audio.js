@@ -63,11 +63,14 @@ export function createSoundscape(P) {
 
   // One wave reaching the beach: the roar builds and brightens as it breaks, then the
   // backwash hisses down the sand while the roar settles.
-  function wave() {
+  // With the breathing guide on, the page calls breathWave() at the start of each breath
+  // instead: the wave rolls in while you breathe in and hisses back while you breathe out.
+  let breathing = false;
+  function wave(rise0, fall0) {
     const t = ac.currentTime;
     const period = Math.sqrt(2 * Math.PI * P.swellLength / 9.81);            // deep-water swell period
-    const amp = clamp01(0.2 + 0.12 * P.swellHs + 0.03 * P.windSpeed) * rnd(0.65, 1.0);
-    const rise = period * rnd(0.3, 0.45), fall = period * rnd(0.5, 0.8);
+    const amp = clamp01(0.2 + 0.12 * P.swellHs + 0.03 * P.windSpeed) * (rise0 ? 0.9 : rnd(0.65, 1.0));
+    const rise = rise0 || period * rnd(0.3, 0.45), fall = fall0 || period * rnd(0.5, 0.8);
     waveGain.gain.setTargetAtTime(amp * 1.6, t, rise / 3);
     waveGain.gain.setTargetAtTime(amp * 0.25, t + rise, fall / 3);
     waveFilter.frequency.setTargetAtTime(900 + 80 * P.windSpeed * amp, t, rise / 3);
@@ -80,7 +83,7 @@ export function createSoundscape(P) {
     windGain.gain.setTargetAtTime(Math.min(0.35, 0.0016 * P.windSpeed * P.windSpeed) * rnd(0.6, 1.2), t, 1.5);
     windFilter.frequency.setTargetAtTime((300 + 45 * P.windSpeed) * rnd(0.8, 1.25), t, 2);
     rumbleGain.gain.setTargetAtTime(0.06 + 0.03 * P.swellHs, t, 2);
-    waveTimer = setTimeout(wave, period * rnd(0.55, 0.95) * 1000);
+    if (!rise0) waveTimer = setTimeout(wave, period * rnd(0.55, 0.95) * 1000);
   }
 
   // A seagull a little way off: a few falling "kee-ow" calls, each a buzzy sawtooth through
@@ -158,7 +161,7 @@ export function createSoundscape(P) {
       if (!ac) build();
       ac.resume();
       master.gain.setTargetAtTime(1, ac.currentTime, 0.8);
-      if (!waveTimer) { wave(); gullTimer = setTimeout(gull, 3000); }
+      if (!waveTimer) { if (!breathing) wave(); else waveTimer = -1; gullTimer = setTimeout(gull, 3000); }
       startMusic();
     } else if (ac) {
       master.gain.setTargetAtTime(0, ac.currentTime, 0.3);
@@ -175,6 +178,14 @@ export function createSoundscape(P) {
     get mode() { return S.mode; },
     setOn,
     toggle() { setOn(!S.on); },
+    setBreathing(on) {
+      if (on === breathing) return;
+      breathing = on;
+      if (!ac || !S.on) return;
+      clearTimeout(waveTimer);
+      if (on) waveTimer = -1; else wave();
+    },
+    breathWave(inhale, exhale) { if (ac && S.on && breathing) wave(inhale, exhale); },
     // phones suspend audio when the screen locks or the page is hidden; call from a gesture
     resume() { if (S.on && ac && ac.state !== 'running') ac.resume(); },
     setOcean(v) { S.ocean = v; if (ac) oceanBus.gain.setTargetAtTime(v, ac.currentTime, 0.1); },

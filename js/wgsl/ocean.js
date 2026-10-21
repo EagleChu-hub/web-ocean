@@ -35,7 +35,23 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   let aa = vec2f(fwidth(el), fwidth(eh));
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
-  let L = skyAtmo(d2) * (1.0 - cl.a) + cl.rgb + sunDisk(dir) * sunT;
+  var L = skyAtmo(d2) * (1.0 - cl.a) + cl.rgb + sunDisk(dir) * sunT;
+  // stars come out as the sky darkens: one per cell of a grid on the sky, of varying
+  // brightness, twinkling a little, fading towards the hazy horizon and behind clouds
+  if (F.night.x > 0.0 && dir.y > 0.0) {
+    let g = dir * 420.0;
+    let cell = floor(g);
+    let h = pcgHash((u32(i32(cell.x) + 4096) * 73856093u) ^ (u32(i32(cell.y) + 4096) * 19349663u) ^ (u32(i32(cell.z) + 4096) * 83492791u));
+    let r = f32(h & 0xffffu) / 65535.0;
+    if (r > 0.985) {
+      let ctr = cell + 0.5 + 0.3 * (vec3f(f32((h >> 16u) & 255u), f32((h >> 24u) & 255u), f32((h >> 8u) & 255u)) / 255.0 - 0.5);
+      let d = length(g - ctr);
+      let mag = pow((r - 0.985) / 0.015, 3.0);
+      let tw = 0.75 + 0.25 * sin(F.camPos.w * (2.0 + 3.0 * r) + f32(h & 1023u));
+      let star = exp(-d * d * 9.0) * mag * tw * smoothstep(0.02, 0.25, dir.y) * (1.0 - cl.a);
+      L += vec3f(0.85, 0.9, 1.0) * star * 0.25 * F.night.x;
+    }
+  }
   return vec4f(min(L, vec3f(6.0e4)), 1.0);   // stay below the half-float maximum
 }
 `;
