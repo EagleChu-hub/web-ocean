@@ -45,6 +45,7 @@ export const P = {
   veil: 0.36,
   bloom: 0.10,
   beach: 0,            // sandy cove with headlands and seagulls
+  seaDist: 12,         // m from the waterline where the camera sits on the beach
 };
 // Named starting points for P (?preset=original picks the upstream look). The first one loads
 // by default; the panel's preset menu switches between them.
@@ -807,7 +808,8 @@ async function main() {
     ['veil', '高空雲層', 0, 1, 0.01, ''],
     ['exposure', '亮度', 0.1, 4, 0.01, ''],
     ['bloom', '光暈', 0, 0.3, 0.001, ''],
-    ['beach', '沙灘與景物', 0, 1, 1, ''],
+    ['beach', '沙灘與景物', 0, 1, 1, 'cam'],
+    ['seaDist', '離海距離 (m)', 3, 40, 1, 'cam'],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const val = document.createElement('output');
@@ -817,6 +819,7 @@ async function main() {
       P[key] = Number(inp.value); val.textContent = inp.value;
       if (kind === 'spec') needSpectrum = true;
       if (kind === 'lut') needLUT = true;
+      if (kind === 'cam') placeOnBeach();
       envFull = 2;
     });
     row(label, inp, val);
@@ -829,8 +832,14 @@ async function main() {
   applyPreset(preset);
   for (const k of Object.keys(P)) if (qs.has(k)) P[k] = Number(qs.get(k));
   syncSliders();
-  // with the beach on, start sitting on the sand ~19 m from the water, palms on either side
-  if (P.beach && !qs.get('cam')) { cam.z = 5; cam.y = 2.1; cam.pitch = -2.5 * D2R; }
+  // with the beach on, sit on the sand P.seaDist metres from the water (the waterline in
+  // front of the start view is at z = -14 and the beach rises 1 in 22), palms on either side
+  function placeOnBeach() {
+    if (!P.beach) return;
+    cam.z = -14 + P.seaDist;
+    cam.y = 1.25 + P.seaDist * 0.045;
+  }
+  if (P.beach && !qs.get('cam')) { placeOnBeach(); cam.pitch = -2.5 * D2R; }
 
   // Sound: off until the first click or key press, because browsers block audio before a user
   // gesture. ?sound=0 keeps it off; M toggles it.

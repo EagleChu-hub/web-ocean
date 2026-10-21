@@ -354,10 +354,13 @@ struct VO {
   // alternate sides of the beach, leaving the middle (and the sun, slightly right) open
   let side = select(-1.0, 1.0, (ii & 1u) == 1u);
   let k = f32(ii >> 1u);
-  let x = side * (5.0 + k * 7.5 + 2.0 * hash1(ii * 5u)) + select(0.0, 2.0, side > 0.0);
-  let z = shoreZ(x) + 3.0 + 7.0 * hash1(ii * 5u + 1u);
+  // the nearest pair stands right by the water so they frame the view even from close to the
+  // sea; the rest line the beach further out, each a little further up the sand
+  let x = side * (5.0 + k * 7.0 + 1.5 * hash1(ii * 5u)) + select(0.0, 1.5, side > 0.0);
+  let z = shoreZ(x) + 2.5 + 4.0 * hash1(ii * 5u + 1u) + k * 1.5;
   let base = vec3f(x, terrainH(vec2f(x, z)) - 0.1, z);
-  let height = 8.5 + 5.0 * hash1(ii * 5u + 2u);
+  // the near pair are young, shorter palms, so their crowns stay in view close up
+  let height = select(8.5 + 5.0 * hash1(ii * 5u + 2u), 5.5 + 1.5 * hash1(ii * 5u + 2u), ii < 2u);
   let layer = (ii + u32(hash1(ii * 5u + 3u) * 3.0)) % ${PALM_N}u;
   let flip = PALM_LEAN[layer] != -side;
   let baseU = select(PALM_BASE_U[layer], 1.0 - PALM_BASE_U[layer], flip);
@@ -493,10 +496,10 @@ struct VO {
 @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VO {
   let t = F.camPos.w;
   let s = ii * 11u;
-  // most crabs close in front of where the camera starts, a few down by the water
+  // most crabs on the sand a few metres up from the water, a few right down by it
   let nearCam = ii < 6u;
   let hx = -6.0 + 12.0 * hash1(s);
-  let hz = select(shoreZ(hx) + 2.0 + 6.0 * hash1(s + 1u), -8.0 + 8.0 * hash1(s + 1u), nearCam);
+  let hz = select(shoreZ(hx) + 2.0 + 6.0 * hash1(s + 1u), shoreZ(hx) + 4.0 + 7.0 * hash1(s + 1u), nearCam);
   let a = hash1(s + 2u) * 6.2831853;
   let dir = vec2f(cos(a), sin(a));
   // ping-pong between two spots: a quick dash, then a rest of a few seconds
