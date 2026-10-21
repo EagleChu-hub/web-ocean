@@ -368,8 +368,9 @@ fn fresnelW(c: f32) -> f32 {
     col += (refl + glint) * fresnelW(dot(nW, V)) * gloss;
   }
   // blue tears left on the wet sand by the backwash: specks that glow and fade as it drains
-  if (F.extra.x > 0.0 && film > 0.0 && dist < 30.0) {
-    let sp = smoothstep(0.55, 0.75, gnoise(p * 40.0) + 0.5 * gnoise(p * 97.0));
+  if (F.extra.x > 0.0 && film > 0.0 && dist < 30.0 && h < A) {
+    // only where the specks are bigger than a pixel, so they do not sparkle like noise
+    let sp = smoothstep(0.55, 0.75, gnoise(p * 40.0) + 0.5 * gnoise(p * 97.0)) * (1.0 - smoothstep(0.008, 0.025, fp));
     col += vec3f(0.03, 0.45, 1.0) * sp * film * F.extra.x * 0.35;
   }
   return vec4f(aerial(col, in.rel), 1.0);
@@ -700,8 +701,8 @@ struct VO {
 }
 `;
 
-// A small sailboat far out in the bay, drifting slowly from left to right across the sunset.
-// At 1.3 km it is a silhouette against the bright sea, so it is drawn as one: hull, mast,
+// A sailboat out in the bay, drifting slowly from left to right across the sunset.
+// At 700 m it is a silhouette against the bright sea, so it is drawn as one: hull, mast,
 // mainsail and jib in the boat's own plane facing the camera, rocking gently, with a little
 // light at the masthead after dark. It fades in and out of the haze at the ends of its run.
 // Vertex table: x along the hull (bow +x), y up (m); w = part (0 hull, 1 sail, 2 mast, 3 light).
@@ -725,8 +726,8 @@ struct VO {
 @vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
   let t = F.camPos.w;                       // loops every 600 s: one crossing per loop
   let run = t / 600.0;
-  let c = vec3f(-480.0 + 960.0 * run, 0.0, -1300.0);
-  let v = BV[vi];
+  let c = vec3f(-300.0 + 600.0 * run, 0.0, -700.0);
+  let v = BV[vi] * vec4f(1.5, 1.5, 1.0, 1.0);
   let roll = 0.05 * sin(t * 0.7) + 0.02 * sin(t * 1.9);
   let lp = vec2f(v.x * cos(roll) - v.y * sin(roll), v.x * sin(roll) + v.y * cos(roll));
   let right = normalize(vec3f(F.camRight.x, 0.0, F.camRight.z));
