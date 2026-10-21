@@ -5,7 +5,7 @@
 //   PALMS       photographed coconut palms on billboards along both sides of the beach
 //   LIGHTHOUSE  a photographed lighthouse on an islet in the bay with a rotating beam (BEAM)
 //   SCENERY     photographed coast mountains and a far coastline on the horizon
-//   CRABS       little crabs scuttling sideways across the sand
+//   CRABS       photographed ghost crabs dashing sideways across the sand
 import { FRAME_WGSL, ATMO_CORE_WGSL, ENV_MIPS } from './common.js';
 import { SKY_RENDER_FUNCS } from './sky.js';
 import { ASSET_META } from '../assets.js';
@@ -104,6 +104,8 @@ const LAND_BINDINGS = /* wgsl */ `
 // Lighting shared by the land and the birds: sun, sky hemisphere, aerial perspective.
 const LAND_LIGHT = /* wgsl */ `
 const ENV_MAXMIP: f32 = ${ENV_MIPS - 1}.0;
+// photo textures are stored premultiplied (see imageTexture in main.js)
+fn unpremul(c: vec4f) -> vec4f { return vec4f(c.rgb / max(c.a, 1e-3), c.a); }
 fn skyAmbient(n: vec3f) -> vec3f {
   let up = textureSampleLevel(envCube, sampC, vec3f(0.0, 1.0, 0.0), ENV_MAXMIP).rgb;
   let side = textureSampleLevel(envCube, sampC, normalize(vec3f(n.x, 0.35, n.z) + vec3f(1e-4, 0.0, 0.0)), ENV_MAXMIP - 1.0).rgb;
@@ -119,6 +121,43 @@ fn aerial(col: vec3f, rel: vec3f) -> vec3f {
 
 // Polar grid around the camera: rings grow geometrically, so detail follows distance.
 export const LAND_RINGS = 128, LAND_SEGS = 256;
+// Crab positions are shared: CRABS draws them, LAND darkens the sand under them.
+export const CRAB_COUNT = 5, CRAB_VERTS = 6;
+const CRAB_WGSL = /* wgsl */ `
+fn crabsOn() -> bool { return F.windP[0].w > 0.5; }
+fn crabHash(i: u32) -> f32 { return f32(pcgHash(i)) / 4294967296.0; }
+struct Crab { pos: vec2f, dir: vec2f, moving: f32, size: f32 };
+// Each crab dashes sideways between two spots a metre or two apart in about half a second,
+// then rests a few seconds. They live in the upper swash zone in front of the start view, and
+// like real ghost crabs they run up the beach ahead of each wave and come back after it.
+fn crabState(ii: u32) -> Crab {
+  let t = F.camPos.w;
+  let s = ii * 11u + 3u;
+  let hx = -4.5 + 9.0 * crabHash(s);
+  let home = vec2f(hx, shoreZ(hx) + 1.5 + 2.5 * crabHash(s + 1u));
+  let a = crabHash(s + 2u) * 6.2831853;
+  let d = vec2f(cos(a), sin(a));
+  let period = 4.0 + 5.0 * crabHash(s + 3u);
+  let cyc = t / period + crabHash(s + 4u) * 10.0;
+  let phase = fract(cyc);
+  let dash = smoothstep(0.0, 0.07, phase);
+  let back = (u32(floor(cyc)) & 1u) == 1u;
+  let x01 = select(dash, 1.0 - dash, back);
+  var o: Crab;
+  o.pos = home + d * (x01 - 0.5) * (0.5 + 1.2 * crabHash(s + 5u));
+  o.dir = d * select(1.0, -1.0, back);
+  o.moving = 1.0 - step(0.07, phase);
+  // keep 40 cm ahead of the water's edge (the swash level over the 1:22 beach)
+  let ph = shorePhase(0.0, o.pos);
+  let edge = shoreZ(o.pos.x) + max(F.windP[1].y * setSize(o.pos) * sin(ph), 0.0) / BEACH_SLOPE + 0.4;
+  if (o.pos.y < edge) {
+    o.pos.y = edge;
+    if (cos(ph) > 0.0) { o.moving = 1.0; o.dir = vec2f(0.3, 1.0); }
+  }
+  o.size = 0.2 + 0.08 * crabHash(s + 6u);     // leg span (m)
+  return o;
+}
+`;
 // Photographed sand (dry and wet) and an atlas of shells, starfish and pebbles cut out of a
 // photo; rects are (u, v, w, h) in the atlas, sizes the object's longest side in metres.
 const SHELL_N = ASSET_META.shellRects.length;
@@ -130,7 +169,7 @@ const LAND_TEX = /* wgsl */ `
 const SHELL_RECT = array<vec4f, ${SHELL_N}>(${ASSET_META.shellRects.map((r) => `vec4f(${r.slice(0, 4).join(', ')})`).join(', ')});
 const SHELL_SIZE = array<f32, ${SHELL_N}>(${ASSET_META.shellRects.map((r) => r[4].toFixed(4)).join(', ')});
 `;
-export const LAND = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + LAND_TEX + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + /* wgsl */ `
+export const LAND = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + LAND_TEX + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + CRAB_WGSL + /* wgsl */ `
 struct VO {
   @builtin(position) pos: vec4f,
   @location(0) rel: vec3f,
@@ -180,7 +219,7 @@ fn beachDecal(p: vec2f, density: f32, fp: f32) -> Decal {
   let s = shellAt(lu, r, lod);
   let sh = shellAt(rot2(p + F.sunDir.xz * m * 0.3 - centre, ang) / ext + 0.5, r, lod + 1.5).a;
   let fade = 1.0 - smoothstep(m * 0.3, m * 1.0, fp);
-  o.col = s.rgb;
+  o.col = s.rgb / max(s.a, 1e-3);
   o.cov = s.a * fade;
   o.ao = sh * 0.45 * fade;
   return o;
@@ -293,6 +332,14 @@ fn fresnelW(c: f32) -> f32 {
     }
   }
   alb *= 1.0 - 0.45 * wet * (1.0 - sandy);
+  // soft shadows under the crabs, cast away from the low sun
+  if (crabsOn() && dist < 20.0) {
+    for (var i = 0u; i < ${CRAB_COUNT}u; i++) {
+      let cr = crabState(i);
+      let d = length((p - cr.pos + F.sunDir.xz * cr.size * 0.25) / vec2f(1.0, 1.0)) / cr.size;
+      alb *= 1.0 - 0.4 * (1.0 - smoothstep(0.12, 0.55, d));
+    }
+  }
   alb = mix(alb, vec3f(0.8, 0.82, 0.82), lace * 0.8);
 
   let amb = skyAmbient(n);
@@ -432,7 +479,7 @@ struct VO {
   return o;
 }
 @fragment fn fs(in: VO) -> @location(0) vec4f {
-  let s = textureSample(palmTex, sampT, in.uv, in.layer);
+  let s = unpremul(textureSample(palmTex, sampT, in.uv, in.layer));
   // the photo already carries the backlit sunset look: scale it to the scene's light level
   let lum = vec3f(0.2126, 0.7152, 0.0722);
   let k = dot(skyAmbient(vec3f(0.0, 1.0, 0.0)), lum) * 1.3 + dot(sunIlluminance() * sunVis[0], lum) * 0.05;
@@ -481,7 +528,7 @@ struct VO {
   return o;
 }
 @fragment fn fs(in: VO) -> @location(0) vec4f {
-  let s = textureSample(lhTex, sampT, in.uv);
+  let s = unpremul(textureSample(lhTex, sampT, in.uv));
   let lum = vec3f(0.2126, 0.7152, 0.0722);
   let k = dot(skyAmbient(vec3f(0.0, 1.0, 0.0)), lum) * 1.2 + dot(sunIlluminance() * sunVis[0], lum) * 0.04;
   var col = s.rgb * k;
@@ -532,99 +579,42 @@ struct BO {
 }
 `;
 
-// Little crabs on the beach, each scuttling sideways between two spots, resting in between.
-// Body (a domed fan), eight two-segment legs and two claws; all flat triangles.
-const CRAB_BODY = 10 * 3, CRAB_LEGS = 8 * 2 * 6, CRAB_CLAWS = 2 * 4 * 3;
-export const CRAB_COUNT = 9, CRAB_VERTS = CRAB_BODY + CRAB_LEGS + CRAB_CLAWS;
-export const CRABS = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + /* wgsl */ `
+// Little ghost crabs from two photos: resting (front view) and running (side view, flipped
+// to run head-first across the screen), on billboards; a soft shadow under each is drawn by
+// LAND. F.windP[0].w = crabs on/off.
+export const CRABS = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + CRAB_WGSL + /* wgsl */ `
+@group(0) @binding(6) var crabTex: texture_2d_array<f32>;
+@group(0) @binding(7) var sampT: sampler;
 const QUAD = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0));
-fn hash1(i: u32) -> f32 { return f32(pcgHash(i)) / 4294967296.0; }
-
 struct VO {
   @builtin(position) pos: vec4f,
   @location(0) rel: vec3f,
-  @location(1) nrm: vec3f,
-  @location(2) part: f32,      // 0 body, 1 legs, 2 claws
+  @location(1) uv: vec2f,
+  @location(2) @interpolate(flat) layer: u32,
 };
 @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VO {
-  let t = F.camPos.w;
-  let s = ii * 11u;
-  // most crabs on the sand a few metres up from the water, a few right down by it
-  let nearCam = ii < 6u;
-  let hx = -6.0 + 12.0 * hash1(s);
-  let hz = select(shoreZ(hx) + 2.0 + 6.0 * hash1(s + 1u), shoreZ(hx) + 4.0 + 7.0 * hash1(s + 1u), nearCam);
-  let a = hash1(s + 2u) * 6.2831853;
-  let dir = vec2f(cos(a), sin(a));
-  // ping-pong between two spots: a quick dash, then a rest of a few seconds
-  let period = 5.0 + 5.0 * hash1(s + 3u);
-  let cyc = t / period + hash1(s + 4u) * 10.0;
-  let phase = fract(cyc);
-  let dash = smoothstep(0.0, 0.18, phase);
-  let odd = (u32(floor(cyc)) & 1u) == 1u;
-  let x01 = select(dash, 1.0 - dash, odd);
-  let dist = 0.6 + 1.4 * hash1(s + 5u);
-  let xz = vec2f(hx, hz) + dir * (x01 - 0.5) * dist;
-  let moving = step(phase, 0.18);
-  let ground = terrainH(xz);
-  let scale = 1.8 * (0.8 + 0.4 * hash1(s + 6u));
-
-  // crabs walk sideways: the body's right axis is the direction of travel
-  let R = vec3f(dir.x, 0.0, dir.y);
-  let Fw = vec3f(-dir.y, 0.0, dir.x);
-  let U = vec3f(0.0, 1.0, 0.0);
-  var lp: vec3f;
-  var n = U;
-  var part = 0.0;
-  if (vi < ${CRAB_BODY}u) {
-    let k = vi % 3u;
-    let a0 = (f32(vi / 3u) + select(0.0, 1.0, k == 1u)) / 10.0 * 6.2831853;
-    lp = select(vec3f(cos(a0) * 0.055, 0.03, sin(a0) * 0.04), vec3f(0.0, 0.05, 0.0), k == 2u);
-    n = normalize(vec3f(cos(a0) * 0.6, 1.0, sin(a0) * 0.6));
-  } else if (vi < ${CRAB_BODY + CRAB_LEGS}u) {
-    let j = vi - ${CRAB_BODY}u;
-    let leg = j / 12u;
-    let segN = (j % 12u) / 6u;
-    let c = QUAD[j % 6u];
-    let sideS = select(-1.0, 1.0, leg >= 4u);
-    let li = f32(leg % 4u);
-    let fwd = (li - 1.5) * 0.022;
-    // legs on alternate sides step in opposite phase while the crab runs
-    let stepA = moving * sin(t * 40.0 + li * 1.7 + sideS) * 0.012;
-    let root = vec3f(sideS * 0.045, 0.03, fwd);
-    let knee = vec3f(sideS * 0.085, 0.055, fwd * 1.5 + stepA);
-    let tip = vec3f(sideS * 0.12, -0.03, fwd * 2.0 - stepA);
-    let a0 = select(root, knee, segN == 1u);
-    let b0 = select(knee, tip, segN == 1u);
-    let w = vec3f(0.0, 0.0, 0.006);
-    lp = mix(a0, b0, c.x) + w * (c.y * 2.0 - 1.0);
-    part = 1.0;
-  } else {
-    let j = vi - ${CRAB_BODY + CRAB_LEGS}u;
-    let claw = j / 12u;
-    let k = j % 3u;
-    let sideS = select(-1.0, 1.0, claw == 1u);
-    let a0 = (f32((j % 12u) / 3u) + select(0.0, 1.0, k == 1u)) / 4.0 * 6.2831853;
-    let centre = vec3f(sideS * 0.035, 0.035, 0.075);
-    lp = select(centre + vec3f(cos(a0) * 0.022, 0.0, sin(a0) * 0.016), centre + vec3f(0.0, 0.012, 0.0), k == 2u);
-    part = 2.0;
-  }
-  lp *= scale;
-  let world = vec3f(xz.x, ground, xz.y) + R * lp.x + U * lp.y + Fw * lp.z;
+  let cr = crabState(ii);
+  let c = QUAD[vi];
+  let right = normalize(vec3f(F.camRight.x, 0.0, F.camRight.z));
+  // the running photo shows the crab moving to the right; flip it when it heads left
+  let flip = cr.moving > 0.5 && dot(vec3f(cr.dir.x, 0.0, cr.dir.y), right) < 0.0;
+  let bob = cr.moving * 0.008 * abs(sin(F.camPos.w * 35.0 + f32(ii)));
+  let base = vec3f(cr.pos.x, terrainH(cr.pos) - 0.004 + bob, cr.pos.y);
+  let world = base + right * (c.x - 0.5) * cr.size + vec3f(0.0, c.y * cr.size / ${ASSET_META.crabAspect}, 0.0);
   var o: VO;
   o.rel = world - F.camPos.xyz;
   o.pos = F.viewProj * vec4f(o.rel, 1.0);
-  o.nrm = n;
-  o.part = part;
+  o.uv = vec2f(select(c.x, 1.0 - c.x, flip), 1.0 - c.y);
+  o.layer = select(0u, 1u, cr.moving > 0.5);
   return o;
 }
 @fragment fn fs(in: VO) -> @location(0) vec4f {
-  let n = normalize(in.nrm);
-  let sunE = sunIlluminance() * sunVis[0];
-  var alb = vec3f(0.72, 0.36, 0.18);
-  if (in.part > 0.5) { alb = vec3f(0.8, 0.5, 0.3); }
-  if (in.part > 1.5) { alb = vec3f(0.85, 0.4, 0.2); }
-  let col = alb * (sunE * max(dot(n, F.sunDir.xyz), 0.0) * 0.318 + skyAmbient(n) * 0.9);
-  return vec4f(aerial(col, in.rel), 1.0);
+  let s = unpremul(textureSample(crabTex, sampT, in.uv, in.layer));
+  // backlit photos: scale them to the scene's light, like the palms (a little brighter: the
+  // crabs are pale and sit low, lit by the bright sea and sky in front of them)
+  // lit by the colour of the evening light, not only its brightness, so they sit in the scene
+  let k = skyAmbient(vec3f(0.0, 1.0, 0.0)) * 1.8 + sunIlluminance() * sunVis[0] * 0.07;
+  return vec4f(aerial(s.rgb * k, in.rel), smoothstep(0.2, 0.7, s.a));
 }
 `;
 
@@ -664,7 +654,7 @@ struct VO {
 @fragment fn fs(in: VO) -> @location(0) vec4f {
   let m = textureSample(mountainTex, sampT, in.uv);
   let c = textureSample(coastTex, sampT, in.uv);
-  let s = select(m, c, in.which == 1u);
+  let s = unpremul(select(m, c, in.which == 1u));
   // the photos carry their own haze; scale them to the light of the horizon behind them and
   // let a little of the scene's own atmosphere over them
   let hz = normalize(vec3f(in.rel.x, 0.01, in.rel.z));

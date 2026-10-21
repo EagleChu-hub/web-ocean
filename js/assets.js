@@ -9,6 +9,8 @@ export const ASSET_URLS = {
   "palm3": "assets/palm3.webp",
   "mountains": "assets/mountains.webp",
   "coast": "assets/coast.webp",
-  "lighthouse": "assets/lighthouse.webp"
+  "lighthouse": "assets/lighthouse.webp",
+  "crabIdle": "assets/crabIdle.webp",
+  "crabRun": "assets/crabRun.webp"
 };
-export const ASSET_META = {"sandDryMean": [0.5849, 0.4247, 0.2553], "sandWetMean": [0.285, 0.1879, 0.1019], "shellRects": [[0.00586, 0.00586, 0.26562, 0.2666, 0.1219], [0.27734, 0.00586, 0.25781, 0.24316, 0.1179], [0.54102, 0.00586, 0.22656, 0.22852, 0.1045], [0.77344, 0.00586, 0.19629, 0.18945, 0.0898], [0.00586, 0.27832, 0.17871, 0.15039, 0.0817], [0.19043, 0.27832, 0.1543, 0.13672, 0.0703], [0.35059, 0.27832, 0.1582, 0.13477, 0.0723], [0.51465, 0.27832, 0.10742, 0.10938, 0.0502]], "palmLean": [-1, 1, -1, -1], "palmBaseU": [0.6426, 0.225, 0.6611, 0.6665], "palmAspect": 0.75, "mountainsAspect": 3.5556, "coastAspect": 13.5758, "lighthouseAspect": 0.9049, "lighthouseLamp": [0.5244, 0.1471]};
+export const ASSET_META = {"sandDryMean": [0.5849, 0.4247, 0.2553], "sandWetMean": [0.285, 0.1879, 0.1019], "shellRects": [[0.00586, 0.00586, 0.26562, 0.2666, 0.1219], [0.27734, 0.00586, 0.25781, 0.24316, 0.1179], [0.54102, 0.00586, 0.22656, 0.22852, 0.1045], [0.77344, 0.00586, 0.19629, 0.18945, 0.0898], [0.00586, 0.27832, 0.17871, 0.15039, 0.0817], [0.19043, 0.27832, 0.1543, 0.13672, 0.0703], [0.35059, 0.27832, 0.1582, 0.13477, 0.0723], [0.51465, 0.27832, 0.10742, 0.10938, 0.0502]], "palmLean": [-1, 1, -1, -1], "palmBaseU": [0.6426, 0.225, 0.6611, 0.6665], "palmAspect": 0.75, "mountainsAspect": 3.5556, "coastAspect": 13.5758, "lighthouseAspect": 0.9049, "lighthouseLamp": [0.5244, 0.1471], "crabAspect": 1.3333};

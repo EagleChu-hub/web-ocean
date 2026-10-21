@@ -46,12 +46,12 @@ export const P = {
   bloom: 0.10,
   beach: 0,            // sandy cove with headlands and seagulls
   seaDist: 6,          // m from the waterline where the camera sits on the beach
-  crabs: 0,            // little crabs on the sand (off: they did not look convincing)
+  crabs: 0,            // little ghost crabs on the sand (on in the beach preset)
 };
 // Named starting points for P (?preset=original picks the upstream look). The first one loads
 // by default; the panel's preset menu switches between them.
 const PRESETS = {
-  'Taiwan sunset': { ...P, sunElev: 5, turbidity: 0.4, windSpeed: 6, beach: 1 },
+  'Taiwan sunset': { ...P, sunElev: 5, turbidity: 0.4, windSpeed: 6, beach: 1, crabs: 1 },
   'Original': { ...P },
 };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
@@ -351,15 +351,19 @@ async function main() {
           c2.drawImage(src, 0, 0, mw, mh);
           src = cv;
         }
-        device.queue.copyExternalImageToTexture({ source: src }, { texture: tex, mipLevel: m, origin: [0, 0, layer] }, [mw, mh]);
+        // stored premultiplied, so filtering never bleeds the colour of transparent (keyed-out)
+        // pixels into the edges; shaders divide by alpha
+        device.queue.copyExternalImageToTexture({ source: src },
+          { texture: tex, mipLevel: m, origin: [0, 0, layer], premultipliedAlpha: true }, [mw, mh]);
       }
     });
     return tex;
   }
   const palmUrls = Object.keys(ASSET_URLS).filter((k) => k.startsWith('palm')).map((k) => ASSET_URLS[k]);
-  const [sandDryTex, sandWetTex, shellTex, palmTex, mountainTex, coastTex, lhTex] = await Promise.all([
+  const [sandDryTex, sandWetTex, shellTex, palmTex, mountainTex, coastTex, lhTex, crabTex] = await Promise.all([
     imageTexture([ASSET_URLS.sandDry]), imageTexture([ASSET_URLS.sandWet]), imageTexture([ASSET_URLS.shells]), imageTexture(palmUrls),
     imageTexture([ASSET_URLS.mountains]), imageTexture([ASSET_URLS.coast]), imageTexture([ASSET_URLS.lighthouse]),
+    imageTexture([ASSET_URLS.crabIdle, ASSET_URLS.crabRun]),
   ]);
   const sampTex = device.createSampler({
     magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 8,
@@ -378,7 +382,7 @@ async function main() {
   });
   const [landPipe, gullPipe, palmPipe, lhPipe, crabPipe, sceneryPipe, beamPipe] = await Promise.all([
     solidPipe(landMod, 'land'), solidPipe(gullMod, 'gulls'), solidPipe(palmMod, 'palms', true),
-    solidPipe(lhMod, 'lighthouse', true), solidPipe(crabMod, 'crabs'), solidPipe(sceneryMod, 'scenery', true),
+    solidPipe(lhMod, 'lighthouse', true), solidPipe(crabMod, 'crabs', true), solidPipe(sceneryMod, 'scenery', true),
     // the lighthouse beam glows on top of everything already drawn, sky included
     device.createRenderPipelineAsync({
       label: 'beam', layout: 'auto',
@@ -402,7 +406,7 @@ async function main() {
     entries: [[0, { buffer: frameUBO }], [2, skyView], [3, sampClamp], [6, mountainTex.createView()], [7, coastTex.createView()], [8, sampTex]]
       .map(([binding, resource]) => ({ binding, resource })),
   });
-  const bgCrabs = bg(crabPipe, landRes, 'crabs');
+  const bgCrabs = bg(crabPipe, [...landRes, crabTex.createView({ dimension: '2d-array' }), sampTex], 'crabs');
   const bgBeam = bg(beamPipe, [{ buffer: frameUBO }], 'beam');   // the beam only reads the frame uniforms
   const landIdx = new Uint16Array(LAND_RINGS * LAND_SEGS * 6);
   {
@@ -738,7 +742,7 @@ async function main() {
     f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = 14.0;
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
-    f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed;
+    f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed; f[59] = P.beach && P.crabs;
     // shore: swell angular frequency, swash amplitude (m), beach on/off, breaker height (m)
     f[60] = Math.sqrt(9.81 * 2 * Math.PI / P.swellLength); f[61] = 0.1 + 0.06 * P.swellHs; f[62] = P.beach;
     f[63] = 0.35 + 0.25 * P.swellHs;

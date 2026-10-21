@@ -12,7 +12,7 @@
 ```bash
 npm install
 npm start        # http://localhost:8080/
-npm run build    # 重新產生 ocean.html 與 ocean.min.html（含內嵌照片材質，各約 1.6 MB）
+npm run build    # 重新產生 ocean.html 與 ocean.min.html（含內嵌照片材質，各約 1.7 MB）
 ```
 修改 `js/` 下任何檔案後都要 `npm run build`，並確認兩個 bundle 都有產生、可從 `file://` 直接開。
 
@@ -28,7 +28,7 @@ npm run build    # 重新產生 ocean.html 與 ocean.min.html（含內嵌照片�
 - `js/wgsl/post.js` — bloom 與 tone mapping
 - `js/assets.js` — 照片材質的路徑與量測資料（由 `tools/prepare_assets.py` 產生，勿手改）
 - `assets/*.webp` — 照片材質：沙（乾/濕）、貝殼圖集、4 棵椰子樹、燈塔、左側山脈與右側海岸遠景（使用者用 GPT/Gemini 生成，綠幕去背）
-- `tools/prepare_assets.py` — 處理原圖（`--sand-dry --sand-wet --shells --palms --mountains --coast --lighthouse`）：沙做無縫、依各圖邊框自動取綠幕色去背、貝殼切圖打包、椰子樹對齊樹根、遠景全景裁切並淡出兩端、燈塔量燈的位置。原圖不進 repo，要換圖就重跑此腳本（每次需提供全部原圖）
+- `tools/prepare_assets.py` — 處理原圖（`--sand-dry --sand-wet --shells --palms --mountains --coast --lighthouse --crab-idle --crab-run`）：沙做無縫、依各圖邊框自動取綠幕色去背、貝殼切圖打包、椰子樹對齊樹根、遠景全景裁切並淡出兩端、燈塔量燈的位置、螃蟹依「綠色多於紅藍」去背（雙色綠幕也行）。原圖不進 repo，要換圖就重跑此腳本（每次需提供全部原圖）
 - `build.mjs` — 打包成單檔 ocean.html / ocean.min.html（把 assets/*.webp 內嵌成 data URL）
 - `server.mjs` — 小型靜態伺服器
 
@@ -41,7 +41,7 @@ npm run build    # 重新產生 ocean.html 與 ocean.min.html（含內嵌照片�
 4. 功能：海岸線 SDF、船隻、天氣、錄影輸出
    - ✅ 台灣日落預設（sunElev 5, turbidity 0.4, windSpeed 6），`main.js` 的 `PRESETS`，開頁預設載入
    - ✅ 背景音效／音樂（`js/audio.js`），M 鍵切換
-   - ✅ 沙灘海灣、岬角、椰子樹、貝殼海星、腳印、燈塔、海鷗（`P.beach`）；小螃蟹預設關閉（`P.crabs`，使用者覺得假）
+   - ✅ 沙灘海灣、岬角、椰子樹、貝殼海星、腳印、燈塔、海鷗（`P.beach`）；小螃蟹改用照片（休息正面＋奔跑側面，`crabState()` 共用給 CRABS 與 LAND 影子），會在浪湧上來時往上跑、退了再回來（`P.crabs`，台灣夕陽預設開）
    - ✅ 近岸碎浪（land.js `surf()`）：淺水波速 sqrt(g·d) 讓浪變密、變高變陡、水深約 1.3 倍浪高處碎成白浪；沿岸相位與浪組變化。沖刷 `swash()` 用水線相位（整片一起動，避免近水線相位劇變造成反常的乾帶）。沙灘依「水退去幾秒」畫鏡面水膜與泡沫線
    - ✅ 離海距離 `P.seaDist`（預設 6 m）
    - 外部模型評估過（OpenGameArt/Quaternius 的 CC0 棕櫚樹為 .blend/.fbx，且容器連不到那些網站），為維持單檔與程序生成，改用自寫 WGSL
@@ -54,6 +54,7 @@ npm run build    # 重新產生 ocean.html 與 ocean.min.html（含內嵌照片�
 - 雲端容器可以截到 WebGPU 畫面，但要用 headed Chromium + xvfb：`xvfb-run -a` 搭配 `headless: false` 與 `--enable-unsafe-webgpu --use-webgpu-adapter=swiftshader --no-sandbox --disable-gpu-sandbox --enable-features=Vulkan --use-vulkan=swiftshader --disable-gpu-watchdog`，在 `GPUQueue.submit` 後立刻 `canvas.toDataURL()`。很慢（640x360 約 4 分鐘出圖）。太陽高時截圖會偏白過曝，用 `sunElev=1.5&exposure=0.6` 顏色較接近真實，且軟體渲染的顏色、亮度不一定等於真實 GPU，最後仍需本機確認。headless 模式下裝置會立刻 lost
 - 使用 WGSL，不用 GLSL；以程序生成為主。照片材質只用於程序做不像的東西（沙、貝殼、椰子樹、燈塔、遠景），一律放 assets/ 並經 prepare_assets.py 處理
 - 需要 Chrome/Edge 的 WebGPU；雲端容器沒有 GPU，視覺驗證需在本機進行
+- 照片材質以 premultiplied alpha 上傳（`copyExternalImageToTexture` 的 `premultipliedAlpha: true`），shader 用 `unpremul()` 還原；否則去背邊緣會被透明像素的綠色/黑色污染
 - HDR 是 rgba16float：太陽核心會溢位成 inf，composite 會把它變 NaN（黑點）。天空/海面輸出要 clamp 到 6e4，composite 也有 NaN 防護
 - 手機音效：只能在 pointerup/touchend/click/keydown 裡啟動 AudioContext（pointerdown 在觸控不算使用者啟動）；iOS 設 `navigator.audioSession.type = 'playback'` 避免被靜音鍵關掉
 
