@@ -65,7 +65,7 @@ fn setSize(xz: vec2f) -> f32 {
 // 1.3 times their height (F.windP[1].w), and run on to the sand as a lower, foaming bore.
 // h = height, dhdd = d(height)/d(depth), crest = 0..1 position in the wave (1 = crest),
 // broken = how far into the surf zone (0 before breaking, 1 well inside it).
-struct Surf { h: f32, dhdd: f32, crest: f32, broken: f32 };
+struct Surf { h: f32, dhdd: f32, crest: f32, broken: f32, front: f32, behind: f32, breaking: f32 };
 fn surf(depth: f32, xz: vec2f) -> Surf {
   var o: Surf;
   let H = F.windP[1].w * setSize(xz);
@@ -81,6 +81,11 @@ fn surf(depth: f32, xz: vec2f) -> Surf {
   o.dhdd = amp * 1.5 * p * p * cos(sk) * (1.0 - 0.55 * sin(ph)) * dpdd * step(0.0, depth);
   o.crest = p;
   o.broken = smoothstep(dB * 1.35, dB * 0.85, depth);
+  // shoreward face of the crest (> 0), phase since the crest passed (seaward side, 0..2pi),
+  // and the band where the wave is actually curling over
+  o.front = cos(sk);
+  o.behind = fract((sk - 1.5708) / 6.2831853) * 6.2831853;
+  o.breaking = smoothstep(dB * 2.0, dB * 1.1, depth) * smoothstep(0.1, dB * 0.5, depth);
   return o;
 }
 
@@ -434,7 +439,13 @@ struct VO {
 // billboards parallel to the screen, anchored at the trunk base, flipped so each leans in
 // towards the middle of the beach, and swaying more towards the crown.
 const PALM_N = ASSET_META.palmLean.length;
-export const PALM_COUNT = 18, PALM_VERTS = 6;
+const PALM_LAYOUT = [
+  [-2.8, 1.4, 5.4, 0.9], [-4.2, 2.9, 6.4, 1.3], [-12.5, 7.5, 11.5, 0.8], [-14.8, 9.8, 9.2, -0.4],
+  [-13.6, 12.5, 12.8, 0.3], [-23.5, 4.5, 10.0, 2.2], [-31.0, 13.0, 12.0, 0.5], [-41.0, 7.5, 9.5, 1.2],
+  [4.6, 1.8, 7.4, -0.3], [6.0, 3.4, 6.0, -0.9], [13.2, 6.2, 8.4, -1.6], [19.5, 3.8, 10.2, -2.6],
+  [27.0, 12.5, 13.0, -0.4], [29.2, 10.2, 9.4, 0.4], [38.0, 6.0, 11.0, -1.4], [48.0, 15.0, 12.5, -0.6],
+];
+export const PALM_COUNT = PALM_LAYOUT.length, PALM_VERTS = 6;
 export const PALMS = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + /* wgsl */ `
 @group(0) @binding(6) var palmTex: texture_2d_array<f32>;
 @group(0) @binding(7) var sampT: sampler;
@@ -450,26 +461,28 @@ struct VO {
   @location(1) uv: vec2f,
   @location(2) @interpolate(flat) layer: u32,
 };
+// Where the palms grow, laid out by hand in loose clumps rather than rows: x (m), metres up
+// the beach from the waterline, height (m), and lean at the crown (m, + towards the right).
+// Two small clumps stand right by the water on either side of the start view, so their trunks
+// and fronds frame it even from 6 m off the sea; the rest are further along the beach.
+const PALM_AT = array<vec4f, ${PALM_LAYOUT.length}>(${PALM_LAYOUT.map((p) => `vec4f(${p.join(', ')})`).join(', ')});
 @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VO {
-  // alternate sides of the beach, leaving the middle (and the sun, slightly right) open
-  let side = select(-1.0, 1.0, (ii & 1u) == 1u);
-  let k = f32(ii >> 1u);
-  // the nearest pair stands right by the water so they frame the view even from close to the
-  // sea; the rest line the beach further out, each a little further up the sand
-  let x = side * (5.0 + k * 7.0 + 1.5 * hash1(ii * 5u)) + select(0.0, 1.5, side > 0.0);
-  let z = shoreZ(x) + 2.5 + 4.0 * hash1(ii * 5u + 1u) + k * 1.5;
+  let at = PALM_AT[ii];
+  let x = at.x;
+  let z = shoreZ(x) + at.y;
   let base = vec3f(x, terrainH(vec2f(x, z)) - 0.1, z);
-  // the near pair are young, shorter palms, so their crowns stay in view close up
-  let height = select(8.5 + 5.0 * hash1(ii * 5u + 2u), 5.5 + 1.5 * hash1(ii * 5u + 2u), ii < 2u);
-  let layer = (ii + u32(hash1(ii * 5u + 3u) * 3.0)) % ${PALM_N}u;
-  let flip = PALM_LEAN[layer] != -side;
+  let height = at.z;
+  let layer = (ii * 3u + 1u) % ${PALM_N}u;
+  // flip the photo so it leans the way this palm should: its own lean, or in towards the middle
+  let want = select(-sign(x), sign(at.w), abs(at.w) > 0.2);
+  let flip = PALM_LEAN[layer] != want;
   let baseU = select(PALM_BASE_U[layer], 1.0 - PALM_BASE_U[layer], flip);
-
   let c = QUAD[vi];
   let right = normalize(vec3f(F.camRight.x, 0.0, F.camRight.z));
   let t = F.camPos.w;
   let ph = hash1(ii * 5u + 4u) * 6.2831853;
-  let sway = (0.25 * sin(t * 0.55 + ph) + 0.08 * sin(t * 1.3 + ph * 2.0)) * (0.5 + 0.06 * F.windP[0].z) * c.y * c.y;
+  let sway = (0.25 * sin(t * 0.55 + ph) + 0.08 * sin(t * 1.3 + ph * 2.0)) * (0.5 + 0.06 * F.windP[0].z) * c.y * c.y
+           + at.w * pow(c.y, 1.5);
   let world = base + right * ((c.x - baseU) * height * PALM_ASPECT + sway) + vec3f(0.0, c.y * height, 0.0);
   var o: VO;
   o.rel = world - F.camPos.xyz;
@@ -621,17 +634,22 @@ struct VO {
 // Far scenery from photos: the coast mountains on the left and a far coastline on the right,
 // each a strip on an arc around the bay, so it sits on the horizon from anywhere on the beach.
 // The strips reach a little below sea level; the sea in front hides their bottom edge.
-export const SCENERY_SEGS = 48, SCENERY_VERTS = SCENERY_SEGS * 6;
+export const SCENERY_SEGS = 96, SCENERY_VERTS = SCENERY_SEGS * 6;
 const DEG = Math.PI / 180;
-// centre x, z, radius, start and end angle (rad, 0 = straight out to sea, + to the right), height
-const ARC = (r, a0, a1, aspect, vScale) => [0, 5, r, a0 * DEG, a1 * DEG, r * (a1 - a0) * DEG / aspect * vScale];
-const ARCS = [ARC(6000, -64, -16, ASSET_META.mountainsAspect, 0.85), ARC(9000, 14, 52, ASSET_META.coastAspect, 1.0)];
+// centre x, z, radius, start and end angle (rad, 0 = straight out to sea, + to the right),
+// height, angle one copy of the photo spans, and over how many degrees the right end sinks
+// into the sea. The mountains run on far to the left as mirrored copies (seams out of the
+// usual view) and their right end slopes down into the sea like a headland, rather than
+// stopping in mid-air.
+const ARC = (r, a0, a1, span, aspect, vScale, sink) =>
+  [0, 5, r, a0 * DEG, a1 * DEG, r * span * DEG / aspect * vScale, span * DEG, sink * DEG];
+const ARCS = [ARC(6000, -160, -12, 48, ASSET_META.mountainsAspect, 0.85, 14), ARC(9000, 14, 52, 38, ASSET_META.coastAspect, 1.0, 0)];
 export const SCENERY = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + LAND_LIGHT + /* wgsl */ `
 @group(0) @binding(6) var mountainTex: texture_2d<f32>;
 @group(0) @binding(7) var coastTex: texture_2d<f32>;
 @group(0) @binding(8) var sampT: sampler;
 const QUAD = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0));
-const ARCS = array<array<f32, 6>, 2>(${ARCS.map((a) => `array<f32, 6>(${a.map((v) => v.toFixed(5)).join(', ')})`).join(', ')});
+const ARCS = array<array<f32, 8>, 2>(${ARCS.map((a) => `array<f32, 8>(${a.map((v) => v.toFixed(5)).join(', ')})`).join(', ')});
 struct VO {
   @builtin(position) pos: vec4f,
   @location(0) rel: vec3f,
@@ -643,11 +661,15 @@ struct VO {
   let c = QUAD[vi % 6u];
   let u = (f32(vi / 6u) + c.x) / ${SCENERY_SEGS}.0;
   let th = mix(a[3], a[4], u);
-  let world = vec3f(a[0] + a[2] * sin(th), -8.0 + c.y * a[5], a[1] - a[2] * cos(th));
+  // photo u counted from the right end, mirrored on every repeat so the copies join smoothly
+  let r = (a[4] - th) / a[6];
+  let m = select(fract(r), 1.0 - fract(r), (u32(floor(r)) & 1u) == 1u);
+  let sink = select(0.0, smoothstep(a[4] - a[7], a[4], th), a[7] > 0.0);
+  let world = vec3f(a[0] + a[2] * sin(th), -8.0 + (c.y - sink * 0.9) * a[5], a[1] - a[2] * cos(th));
   var o: VO;
   o.rel = world - F.camPos.xyz;
   o.pos = F.viewProj * vec4f(o.rel, 1.0);
-  o.uv = vec2f(u, 1.0 - c.y);
+  o.uv = vec2f(1.0 - m, 1.0 - c.y);
   o.which = ii;
   return o;
 }

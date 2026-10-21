@@ -267,7 +267,11 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   var edge = 0.0;
   if (inSurf) {
     let ph = shorePhase(depth, xz);
-    let white = sf.broken * (smoothstep(0.45, 0.9, sf.crest) + 0.25) * smoothstep(0.0, 0.3, depth) +
+    // the curling lip: a bright white line along the shoreward face of each breaking crest
+    let lip = sf.breaking * smoothstep(0.8, 0.97, sf.crest) * smoothstep(-0.15, 0.25, sf.front);
+    // the foam the broken wave leaves behind it, thinning out towards the next crest
+    let trail = sf.broken * exp(-sf.behind * 1.2) * smoothstep(0.0, 0.3, depth);
+    let white = lip * 1.2 + trail * 0.85 + sf.broken * 0.12 * smoothstep(0.0, 0.3, depth) +
                 (1.0 - sf.broken) * smoothstep(0.93, 1.0, sf.crest) * (1.0 - smoothstep(F.windP[1].w * 1.6, F.windP[1].w * 3.0, depth)) * 0.6;
     edge = 1.0 - smoothstep(0.0, 0.1 + 0.08 * max(cos(ph), 0.0), waterD);
     cover = max(cover, white * 0.9 + edge * 0.7);

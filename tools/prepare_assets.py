@@ -250,7 +250,8 @@ def main():
     meta['palmLean'] = lean
     meta['palmBaseU'] = base_u
     meta['palmAspect'] = round(ims[0].width / ims[0].height, 4)
-    for name, im in (('mountains', panorama(args.mountains, 0.06, 0.18)),
+    # the mountains are repeated mirrored and sunk into the sea at their end in the shader, so no end fades
+    for name, im in (('mountains', panorama(args.mountains, 0.0, 0.0)),
                      ('coast', panorama(args.coast, 0.08, 0.12, glow=True))):
         im.save(os.path.join(OUT, f'{name}.webp'), quality=82, method=6)
         meta[name + 'Aspect'] = round(im.width / im.height, 4)
