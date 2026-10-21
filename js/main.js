@@ -9,7 +9,7 @@ import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
 import {
   LAND, LAND_RINGS, LAND_SEGS, GULLS, GULL_COUNT, GULL_VERTS, PALMS, PALM_COUNT, PALM_VERTS,
-  LIGHTHOUSE, LIGHTHOUSE_VERTS, BEAM_VERTS, CRABS, CRAB_COUNT, CRAB_VERTS,
+  LIGHTHOUSE, LIGHTHOUSE_VERTS, BEAM_VERTS, CRABS, CRAB_COUNT, CRAB_VERTS, SCENERY, SCENERY_VERTS,
 } from './wgsl/land.js';
 import { createSoundscape } from './audio.js';
 import { ASSET_URLS } from './assets.js';
@@ -355,16 +355,17 @@ async function main() {
     return tex;
   }
   const palmUrls = Object.keys(ASSET_URLS).filter((k) => k.startsWith('palm')).map((k) => ASSET_URLS[k]);
-  const [sandDryTex, sandWetTex, shellTex, palmTex] = await Promise.all([
+  const [sandDryTex, sandWetTex, shellTex, palmTex, mountainTex, coastTex, lhTex] = await Promise.all([
     imageTexture([ASSET_URLS.sandDry]), imageTexture([ASSET_URLS.sandWet]), imageTexture([ASSET_URLS.shells]), imageTexture(palmUrls),
+    imageTexture([ASSET_URLS.mountains]), imageTexture([ASSET_URLS.coast]), imageTexture([ASSET_URLS.lighthouse]),
   ]);
   const sampTex = device.createSampler({
     magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', maxAnisotropy: 8,
   });
 
   // Beach terrain (camera-centred polar grid) and seagulls, drawn into the main pass.
-  const [landMod, gullMod, palmMod, lhMod, crabMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'),
-    shader(PALMS, 'palms'), shader(LIGHTHOUSE, 'lighthouse'), shader(CRABS, 'crabs')]);
+  const [landMod, gullMod, palmMod, lhMod, crabMod, sceneryMod] = await Promise.all([shader(LAND, 'land'), shader(GULLS, 'gulls'),
+    shader(PALMS, 'palms'), shader(LIGHTHOUSE, 'lighthouse'), shader(CRABS, 'crabs'), shader(SCENERY, 'scenery')]);
   const solidPipe = (module, label, alphaToCoverageEnabled = false) => device.createRenderPipelineAsync({
     label, layout: 'auto',
     vertex: { module, entryPoint: 'vs' },
@@ -373,9 +374,9 @@ async function main() {
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
     multisample: { count: MSAA, alphaToCoverageEnabled },
   });
-  const [landPipe, gullPipe, palmPipe, lhPipe, crabPipe, beamPipe] = await Promise.all([
+  const [landPipe, gullPipe, palmPipe, lhPipe, crabPipe, sceneryPipe, beamPipe] = await Promise.all([
     solidPipe(landMod, 'land'), solidPipe(gullMod, 'gulls'), solidPipe(palmMod, 'palms', true),
-    solidPipe(lhMod, 'lighthouse'), solidPipe(crabMod, 'crabs'),
+    solidPipe(lhMod, 'lighthouse', true), solidPipe(crabMod, 'crabs'), solidPipe(sceneryMod, 'scenery', true),
     // the lighthouse beam glows on top of everything already drawn, sky included
     device.createRenderPipelineAsync({
       label: 'beam', layout: 'auto',
@@ -392,7 +393,13 @@ async function main() {
   const bgLand = bg(landPipe, [...landRes, sandDryTex.createView(), sandWetTex.createView(), shellTex.createView(), sampTex], 'land');
   const bgGulls = bg(gullPipe, landRes, 'gulls');
   const bgPalms = bg(palmPipe, [...landRes, palmTex.createView({ dimension: '2d-array' }), sampTex], 'palms');
-  const bgLH = bg(lhPipe, landRes, 'lighthouse');
+  const bgLH = bg(lhPipe, [...landRes, lhTex.createView(), sampTex], 'lighthouse');
+  // the scenery shader reads only the frame, the sky-view LUT and its two photos
+  const bgScenery = device.createBindGroup({
+    label: 'scenery', layout: sceneryPipe.getBindGroupLayout(0),
+    entries: [[0, { buffer: frameUBO }], [2, skyView], [3, sampClamp], [6, mountainTex.createView()], [7, coastTex.createView()], [8, sampTex]]
+      .map(([binding, resource]) => ({ binding, resource })),
+  });
   const bgCrabs = bg(crabPipe, landRes, 'crabs');
   const bgBeam = bg(beamPipe, [{ buffer: frameUBO }], 'beam');   // the beam only reads the frame uniforms
   const landIdx = new Uint16Array(LAND_RINGS * LAND_SEGS * 6);
@@ -1047,6 +1054,9 @@ async function main() {
       rp.setPipeline(lhPipe);
       rp.setBindGroup(0, bgLH);
       rp.draw(LIGHTHOUSE_VERTS);
+      rp.setPipeline(sceneryPipe);
+      rp.setBindGroup(0, bgScenery);
+      rp.draw(SCENERY_VERTS, 2);
       rp.setPipeline(crabPipe);
       rp.setBindGroup(0, bgCrabs);
       rp.draw(CRAB_VERTS, CRAB_COUNT);

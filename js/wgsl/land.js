@@ -3,7 +3,8 @@
 //   LAND        sand beach, dunes and the two headlands of the cove
 //   GULLS       a few seagulls gliding and flapping over the beach
 //   PALMS       photographed coconut palms on billboards along both sides of the beach
-//   LIGHTHOUSE  a lighthouse on a rocky islet in the bay with a rotating beam (BEAM entry points)
+//   LIGHTHOUSE  a photographed lighthouse on an islet in the bay with a rotating beam (BEAM)
+//   SCENERY     photographed coast mountains and a far coastline on the horizon
 //   CRABS       little crabs scuttling sideways across the sand
 import { FRAME_WGSL, ATMO_CORE_WGSL, ENV_MIPS } from './common.js';
 import { SKY_RENDER_FUNCS } from './sky.js';
@@ -34,11 +35,12 @@ fn terrainH(p: vec2f) -> f32 {
   let u = p.y - shoreZ(p.x);                           // metres inland of the waterline
   var h = clamp(u * BEACH_SLOPE, -16.0, 3.0);          // gentle sandy beach and seabed
   h += smoothstep(40.0, 160.0, u) * (3.0 + 2.0 * gnoise(p * 0.02));            // dunes
+  // low wooded points; the real mountains behind them are the photo backdrop (SCENERY)
   let hill = reach * smoothstep(-60.0, 120.0, u) *
-    (55.0 + 25.0 * gnoise(p * 0.004) + 6.0 * gnoise(p * 0.03));
-  // a small rocky islet out in the bay, with the lighthouse on top
+    (14.0 + 6.0 * gnoise(p * 0.004) + 3.0 * gnoise(p * 0.03));
+  // a small rocky islet out in the bay, just awash: the lighthouse photo carries the rocks
   let di = distance(p, ISLET);
-  let islet = 29.0 * smoothstep(62.0, 12.0, di) * (0.9 + 0.1 * gnoise(p * 0.08)) + 4.0 * gnoise(p * 0.15) * smoothstep(62.0, 30.0, di) - 16.5;
+  let islet = 18.0 * smoothstep(40.0, 8.0, di) * (0.9 + 0.1 * gnoise(p * 0.08)) - 16.5;
   return max(h + hill, islet);
 }
 
@@ -382,20 +384,18 @@ struct VO {
 }
 `;
 
-// A lighthouse on the islet in the bay: a tapered white tower with red bands, a
-// railed gallery, a glowing lantern and a dark cap, plus a keeper's house at its foot. The
-// lantern flashes whenever the rotating beam sweeps past the camera; BEAM is the beam itself,
-// drawn additively after the sky.
-const LH_SIDES = 12, LH_SEGS = 8;
-const LH_TOWER = LH_SIDES * LH_SEGS * 6, LH_GALLERY = LH_SIDES * 6, LH_LANTERN = LH_SIDES * 6, LH_CAP = LH_SIDES * 3;
-export const LIGHTHOUSE_VERTS = LH_TOWER + LH_GALLERY + LH_LANTERN + LH_CAP + 30;
+// The lighthouse on the islet: a photographed lighthouse and its rocks on a billboard facing
+// the camera. The lamp in the photo flashes whenever the rotating beam sweeps past the camera;
+// BEAM is the beam itself, drawn additively after the sky.
+export const LIGHTHOUSE_VERTS = 6;
 export const BEAM_VERTS = 2 * 8 * 3;
 const LH_COMMON = /* wgsl */ `
 const QUAD = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0));
-const LH_H: f32 = 21.0;
-const LH_S: f32 = 1.35;        // overall scale, so it reads from across the bay
-fn lhBase() -> vec3f { return vec3f(ISLET.x, terrainH(ISLET) - 0.5, ISLET.y); }
-fn lampPos() -> vec3f { return lhBase() + vec3f(0.0, (LH_H + 1.4) * LH_S, 0.0); }
+const LH_H: f32 = 46.0;                   // billboard height (m), rocks and tower
+const LH_ASPECT: f32 = ${ASSET_META.lighthouseAspect};
+const LH_LAMP = vec2f(${ASSET_META.lighthouseLamp.join(', ')});
+fn lhBase() -> vec3f { return vec3f(ISLET.x, -2.0, ISLET.y); }
+fn lampPos() -> vec3f { return lhBase() + vec3f(0.0, LH_H * (1.0 - LH_LAMP.y), 0.0); }
 // horizontal direction of the beam; one turn every 12 s
 fn beamDir() -> vec3f { let a = F.camPos.w * 0.5236; return vec3f(cos(a), 0.0, sin(a)); }
 // how strongly the beam stands out: hardly in daylight, clearly once the sun is low or down
@@ -407,91 +407,32 @@ fn flashK() -> f32 {
 }
 `;
 export const LIGHTHOUSE = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + SHORE_WGSL + LAND_LIGHT + LH_COMMON + /* wgsl */ `
+@group(0) @binding(6) var lhTex: texture_2d<f32>;
+@group(0) @binding(7) var sampT: sampler;
 struct VO {
   @builtin(position) pos: vec4f,
   @location(0) rel: vec3f,
-  @location(1) nrm: vec3f,
-  @location(2) h: f32,         // height above the tower base (m)
-  @location(3) kind: f32,      // 0 tower, 1 dark metal, 2 lantern glass, 3 house
+  @location(1) uv: vec2f,
 };
-fn ring(a: f32) -> vec3f { return vec3f(cos(a), 0.0, sin(a)); }
 @vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
-  let base = lhBase();
-  var p: vec3f;
-  var n: vec3f;
-  var kind = 0.0;
-  let TAU = 6.2831853;
-  if (vi < ${LH_TOWER}u) {
-    let q = vi / 6u;
-    let c = QUAD[vi % 6u];
-    let a = (f32(q % ${LH_SIDES}u) + c.x) / ${LH_SIDES}.0 * TAU;
-    let s = (f32(q / ${LH_SIDES}u) + c.y) / ${LH_SEGS}.0;
-    let r = mix(2.4, 1.5, s);
-    n = normalize(ring(a) + vec3f(0.0, 0.9 / LH_H, 0.0));
-    p = ring(a) * r + vec3f(0.0, s * LH_H, 0.0);
-  } else if (vi < ${LH_TOWER + LH_GALLERY}u) {
-    // gallery: a flat ring around the top of the tower
-    let j = vi - ${LH_TOWER}u;
-    let c = QUAD[j % 6u];
-    let a = (f32(j / 6u) + c.x) / ${LH_SIDES}.0 * TAU;
-    p = ring(a) * mix(1.3, 2.3, c.y) + vec3f(0.0, LH_H, 0.0);
-    n = vec3f(0.0, 1.0, 0.0);
-    kind = 1.0;
-  } else if (vi < ${LH_TOWER + LH_GALLERY + LH_LANTERN}u) {
-    let j = vi - ${LH_TOWER + LH_GALLERY}u;
-    let c = QUAD[j % 6u];
-    let a = (f32(j / 6u) + c.x) / ${LH_SIDES}.0 * TAU;
-    p = ring(a) * 1.05 + vec3f(0.0, LH_H + c.y * 2.6, 0.0);
-    n = ring(a);
-    kind = 2.0;
-  } else if (vi < ${LH_TOWER + LH_GALLERY + LH_LANTERN + LH_CAP}u) {
-    let j = vi - ${LH_TOWER + LH_GALLERY + LH_LANTERN}u;
-    let k = j % 3u;
-    let a = (f32(j / 3u) + select(0.0, 1.0, k == 1u)) / ${LH_SIDES}.0 * TAU;
-    p = select(ring(a) * 1.3 + vec3f(0.0, LH_H + 2.6, 0.0), vec3f(0.0, LH_H + 4.0, 0.0), k == 2u);
-    n = normalize(ring(a) + vec3f(0.0, 0.9, 0.0));
-    kind = 1.0;
-  } else {
-    // keeper's house: a box beside the tower (front, back, two sides and the roof)
-    let j = vi - ${LH_TOWER + LH_GALLERY + LH_LANTERN + LH_CAP}u;
-    let face = j / 6u;
-    let c = QUAD[j % 6u] * 2.0 - 1.0;
-    var b: vec3f;
-    if (face == 0u) { b = vec3f(c.x, c.y, 1.0); n = vec3f(0.0, 0.0, 1.0); }
-    else if (face == 1u) { b = vec3f(c.x, c.y, -1.0); n = vec3f(0.0, 0.0, -1.0); }
-    else if (face == 2u) { b = vec3f(1.0, c.y, c.x); n = vec3f(1.0, 0.0, 0.0); }
-    else if (face == 3u) { b = vec3f(-1.0, c.y, c.x); n = vec3f(-1.0, 0.0, 0.0); }
-    else { b = vec3f(c.x, 1.0, c.y); n = vec3f(0.0, 1.0, 0.0); }
-    p = vec3f(5.5, 1.6, 0.0) + b * vec3f(3.0, 1.6, 2.2);
-    kind = 3.0;
-  }
+  let c = QUAD[vi];
+  let right = normalize(vec3f(F.camRight.x, 0.0, F.camRight.z));
+  let world = lhBase() + right * (c.x - 0.5) * LH_H * LH_ASPECT + vec3f(0.0, c.y * LH_H, 0.0);
   var o: VO;
-  o.rel = base + p * LH_S - F.camPos.xyz;
+  o.rel = world - F.camPos.xyz;
   o.pos = F.viewProj * vec4f(o.rel, 1.0);
-  o.nrm = n;
-  o.h = p.y;
-  o.kind = kind;
+  o.uv = vec2f(c.x, 1.0 - c.y);
   return o;
 }
 @fragment fn fs(in: VO) -> @location(0) vec4f {
-  let n = normalize(in.nrm);
-  let sunE = sunIlluminance() * sunVis[0];
-  var alb = vec3f(0.85, 0.84, 0.8);
-  if (in.kind < 0.5) {
-    // two red bands on the white tower
-    let band = step(0.3, fract(in.h / LH_H * 2.0 + 0.15)) * step(fract(in.h / LH_H * 2.0 + 0.15), 0.55);
-    alb = mix(alb, vec3f(0.6, 0.1, 0.08), band);
-  } else if (in.kind < 1.5) {
-    alb = vec3f(0.08, 0.08, 0.09);
-  } else if (in.kind > 2.5) {
-    alb = vec3f(0.8, 0.77, 0.7);
-    if (n.y > 0.5) { alb = vec3f(0.45, 0.15, 0.1); }
-  }
-  var col = alb * (sunE * max(dot(n, F.sunDir.xyz), 0.0) * 0.318 + skyAmbient(n) * 0.9);
-  if (in.kind > 1.5 && in.kind < 2.5) {
-    col = vec3f(1.0, 0.82, 0.5) * (4.0 + 60.0 * flashK()) * duskK();
-  }
-  return vec4f(aerial(col, in.rel), 1.0);
+  let s = textureSample(lhTex, sampT, in.uv);
+  let lum = vec3f(0.2126, 0.7152, 0.0722);
+  let k = dot(skyAmbient(vec3f(0.0, 1.0, 0.0)), lum) * 1.2 + dot(sunIlluminance() * sunVis[0], lum) * 0.04;
+  var col = s.rgb * k;
+  // the lamp: a steady glow, much brighter while the beam faces us
+  let d = (in.uv - LH_LAMP) * vec2f(LH_ASPECT, 1.0);
+  col += vec3f(1.0, 0.82, 0.5) * exp(-dot(d, d) / 0.0006) * (3.0 + 50.0 * flashK()) * duskK();
+  return vec4f(aerial(col, in.rel), smoothstep(0.2, 0.7, s.a));
 }
 
 // The beam: two long cones from the lamp, added on top of the scene. Where the cone surface
@@ -628,5 +569,52 @@ struct VO {
   if (in.part > 1.5) { alb = vec3f(0.85, 0.4, 0.2); }
   let col = alb * (sunE * max(dot(n, F.sunDir.xyz), 0.0) * 0.318 + skyAmbient(n) * 0.9);
   return vec4f(aerial(col, in.rel), 1.0);
+}
+`;
+
+// Far scenery from photos: the coast mountains on the left and a far coastline on the right,
+// each a strip on an arc around the bay, so it sits on the horizon from anywhere on the beach.
+// The strips reach a little below sea level; the sea in front hides their bottom edge.
+export const SCENERY_SEGS = 48, SCENERY_VERTS = SCENERY_SEGS * 6;
+const DEG = Math.PI / 180;
+// centre x, z, radius, start and end angle (rad, 0 = straight out to sea, + to the right), height
+const ARC = (r, a0, a1, aspect, vScale) => [0, 5, r, a0 * DEG, a1 * DEG, r * (a1 - a0) * DEG / aspect * vScale];
+const ARCS = [ARC(6000, -64, -16, ASSET_META.mountainsAspect, 0.85), ARC(9000, 14, 52, ASSET_META.coastAspect, 1.0)];
+export const SCENERY = FRAME_WGSL + ATMO_CORE_WGSL + LAND_BINDINGS + SKY_RENDER_FUNCS + LAND_LIGHT + /* wgsl */ `
+@group(0) @binding(6) var mountainTex: texture_2d<f32>;
+@group(0) @binding(7) var coastTex: texture_2d<f32>;
+@group(0) @binding(8) var sampT: sampler;
+const QUAD = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0));
+const ARCS = array<array<f32, 6>, 2>(${ARCS.map((a) => `array<f32, 6>(${a.map((v) => v.toFixed(5)).join(', ')})`).join(', ')});
+struct VO {
+  @builtin(position) pos: vec4f,
+  @location(0) rel: vec3f,
+  @location(1) uv: vec2f,
+  @location(2) @interpolate(flat) which: u32,
+};
+@vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VO {
+  let a = ARCS[ii];
+  let c = QUAD[vi % 6u];
+  let u = (f32(vi / 6u) + c.x) / ${SCENERY_SEGS}.0;
+  let th = mix(a[3], a[4], u);
+  let world = vec3f(a[0] + a[2] * sin(th), -8.0 + c.y * a[5], a[1] - a[2] * cos(th));
+  var o: VO;
+  o.rel = world - F.camPos.xyz;
+  o.pos = F.viewProj * vec4f(o.rel, 1.0);
+  o.uv = vec2f(u, 1.0 - c.y);
+  o.which = ii;
+  return o;
+}
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let m = textureSample(mountainTex, sampT, in.uv);
+  let c = textureSample(coastTex, sampT, in.uv);
+  let s = select(m, c, in.which == 1u);
+  // the photos carry their own haze; scale them to the light of the horizon behind them and
+  // let a little of the scene's own atmosphere over them
+  let hz = normalize(vec3f(in.rel.x, 0.01, in.rel.z));
+  let sky = skyAtmo(hz);
+  let k = dot(sky, vec3f(0.2126, 0.7152, 0.0722)) * 0.9;
+  let col = mix(s.rgb * k, sky, 0.15);
+  return vec4f(col, smoothstep(0.1, 0.6, s.a));
 }
 `;

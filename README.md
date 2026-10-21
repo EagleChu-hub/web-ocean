@@ -46,7 +46,7 @@ Sound starts with your first click, tap or key press (browsers block audio befor
 
 ### Photo textures
 
-The sand, the shells, starfish and pebbles on it, and the palm trees come from AI-generated photos (made with ChatGPT/Gemini from prompts in this project). `tools/prepare_assets.py` makes the sand tileable, keys the green-screen palms and shells out, packs the shells into an atlas and writes `assets/*.webp` plus `js/assets.js`; `build.mjs` inlines them as data URLs, so `ocean.html` is still one file (about 1.3 MB now). The original source images are not in the repository.
+The sand, the shells, starfish and pebbles on it, the palm trees, the lighthouse and the mountains and coastline on the horizon come from AI-generated photos (made with ChatGPT/Gemini from prompts in this project). `tools/prepare_assets.py` makes the sand tileable, keys the green-screen palms, shells, lighthouse and horizon panoramas out, packs the shells into an atlas and writes `assets/*.webp` plus `js/assets.js`; `build.mjs` inlines them as data URLs, so `ocean.html` is still one file (about 1.6 MB now). The original source images are not in the repository.
 
 ### Phones and browsers without WebGPU
 

@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """Turn the AI-generated source images into the textures the page uses.
 
-    python3 -I tools/prepare_assets.py SAND_DRY SAND_WET SHELLS PALM [PALM ...]
+    python3 -I tools/prepare_assets.py --sand-dry F --sand-wet F --shells F --palms F [F ...] \
+        --mountains F --coast F --lighthouse F
 
-SAND_*  photos of sand, made seamlessly tileable here
-SHELLS  shells, starfish and pebbles on a flat #00FF00 background, cut out into an atlas
-PALM    coconut palms on a flat #00FF00 background, keyed out and aligned at the trunk base
+sand-*      photos of sand, made seamlessly tileable here
+shells      shells, starfish and pebbles on a flat green background, cut out into an atlas
+palms       coconut palms on a flat green background, keyed out and aligned at the trunk base
+mountains   panorama of the coast mountains (left of the view), sky and sea keyed out
+coast       panorama of the far coastline (right of the view), sky, sea and horizon glow keyed out
+lighthouse  lighthouse on its rocky islet, keyed out; the lamp position is measured
+
+All green backgrounds are keyed against their own colour, sampled from the image border.
 
 Writes assets/*.webp and js/assets.js (paths plus the measurements the shaders need).
 The sources themselves are not kept in the repository.
 """
+import argparse
 import json
 import os
 import sys
@@ -49,13 +56,16 @@ def seamless(path, size=768):
 
 
 def key_out(path):
-    """Alpha from the distance to the key green; edge colours un-mixed from the green and
-    any remaining green spill clamped."""
+    """Alpha from the distance to the background green (the median colour of the green
+    pixels on the image border); edge colours un-mixed from it and green spill clamped."""
     a = np.asarray(Image.open(path).convert('RGB')).astype(np.float64)
-    d = np.linalg.norm(a - KEY, axis=2)
+    border = np.concatenate([a[:4].reshape(-1, 3), a[-4:].reshape(-1, 3), a[:, :4].reshape(-1, 3), a[:, -4:].reshape(-1, 3)])
+    greenish = border[(border[:, 1] > 120) & (border[:, 1] > 1.6 * np.maximum(border[:, 0], border[:, 2]))]
+    key = np.median(greenish, axis=0) if len(greenish) > 20 else KEY
+    d = np.linalg.norm(a - key, axis=2)
     alpha = np.clip((d - 70.0) / 90.0, 0.0, 1.0)
     al = np.maximum(alpha, 1e-3)[..., None]
-    rgb = (a - (1.0 - alpha)[..., None] * KEY) / al
+    rgb = (a - (1.0 - alpha)[..., None] * key) / al
     rgb[..., 1] = np.minimum(rgb[..., 1], np.maximum(rgb[..., 0], rgb[..., 2]) * 1.25 + 12.0)
     rgb = np.clip(rgb, 0, 255)
     return np.dstack([rgb, alpha * 255.0]).astype(np.uint8)
@@ -149,10 +159,52 @@ def shell_atlas(path, sheet_m=0.42, size=1024, pad=6):
     return atlas, rects
 
 
+def panorama(path, fade_l, fade_r, glow=False, width=2048):
+    """Key out sky and sea, crop to the land, and fade the left and right ends (fractions of
+    the width) so the strip never ends in a hard vertical edge. With glow, bright pale pixels
+    (a sunset glow the generator painted around the land) are keyed out as well."""
+    rgba = key_out(path).astype(np.float64)
+    if glow:
+        rgb = rgba[..., :3]
+        luma = rgb @ np.array([0.2126, 0.7152, 0.0722])
+        sat = rgb.max(2) - rgb.min(2)
+        landness = np.clip((175.0 - luma) / 35.0, 0.0, 1.0) * np.clip((sat + 20.0) / 40.0, 0.0, 1.0)
+        rgba[..., 3] *= landness
+    x0, y0, x1, y1 = bbox(rgba[..., 3])
+    rgba = rgba[y0:y1, x0:x1]
+    w = rgba.shape[1]
+    t = np.arange(w) / max(w - 1, 1)
+    f = np.clip(np.minimum(t / max(fade_l, 1e-3), (1.0 - t) / max(fade_r, 1e-3)), 0.0, 1.0)
+    rgba[..., 3] *= (f * f * (3.0 - 2.0 * f))[None, :]
+    im = Image.fromarray(np.clip(rgba, 0, 255).astype(np.uint8))
+    if im.width > width:
+        im = im.resize((width, max(1, round(im.height * width / im.width))), Image.LANCZOS)
+    return im
+
+
+def lighthouse(path, h=768):
+    """Key out, crop to the lighthouse and islet, and find the lamp (the warm bright pixels
+    in the upper part) as a UV position."""
+    rgba = key_out(path)
+    x0, y0, x1, y1 = bbox(rgba[..., 3])
+    crop = rgba[y0:y1, x0:x1]
+    c = crop.astype(np.float64)
+    top = c[: c.shape[0] // 3]
+    warm = (top[..., 0] > 200) & (top[..., 1] > 140) & (top[..., 2] < 140) & (top[..., 3] > 200)
+    ys, xs = np.nonzero(warm)
+    lamp = [round(float(xs.mean()) / c.shape[1], 4), round(float(ys.mean()) / c.shape[0], 4)] if len(xs) else [0.5, 0.1]
+    im = Image.fromarray(crop)
+    im = im.resize((max(1, round(im.width * h / im.height)), h), Image.LANCZOS)
+    return im, lamp
+
+
 def main():
-    if len(sys.argv) < 5:
-        sys.exit(__doc__)
-    dry, wet, shells, *palm_paths = sys.argv[1:]
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    for a in ('sand-dry', 'sand-wet', 'shells', 'mountains', 'coast', 'lighthouse'):
+        ap.add_argument('--' + a, required=True)
+    ap.add_argument('--palms', nargs='+', required=True)
+    args = ap.parse_args()
+    dry, wet, shells, palm_paths = args.sand_dry, args.sand_wet, args.shells, args.palms
     os.makedirs(OUT, exist_ok=True)
     meta = {}
     for name, path in (('sandDry', dry), ('sandWet', wet)):
@@ -168,7 +220,15 @@ def main():
     meta['palmLean'] = lean
     meta['palmBaseU'] = base_u
     meta['palmAspect'] = round(ims[0].width / ims[0].height, 4)
-    files = ['sandDry', 'sandWet', 'shells'] + [f'palm{i}' for i in range(len(ims))]
+    for name, im in (('mountains', panorama(args.mountains, 0.06, 0.18)),
+                     ('coast', panorama(args.coast, 0.08, 0.12, glow=True))):
+        im.save(os.path.join(OUT, f'{name}.webp'), quality=82, method=6)
+        meta[name + 'Aspect'] = round(im.width / im.height, 4)
+    lh, lamp = lighthouse(args.lighthouse)
+    lh.save(os.path.join(OUT, 'lighthouse.webp'), quality=85, method=6)
+    meta['lighthouseAspect'] = round(lh.width / lh.height, 4)
+    meta['lighthouseLamp'] = lamp
+    files = ['sandDry', 'sandWet', 'shells'] + [f'palm{i}' for i in range(len(ims))] + ['mountains', 'coast', 'lighthouse']
     urls = {f: f'assets/{f}.webp' for f in files}
     js = ('// Generated by tools/prepare_assets.py; build.mjs inlines the files as data URLs.\n'
           f'export const ASSET_URLS = {json.dumps(urls, indent=2)};\n'
@@ -177,7 +237,8 @@ def main():
         fh.write(js)
     for f in files:
         print(f, os.path.getsize(os.path.join(OUT, f + '.webp')) // 1024, 'KB')
-    print('shells:', len(rects), 'palm lean:', lean, 'sand means:', meta['sandDryMean'], meta['sandWetMean'])
+    print('shells:', len(rects), 'palm lean:', lean, 'mountains', meta['mountainsAspect'], 'coast', meta['coastAspect'],
+          'lighthouse', meta['lighthouseAspect'], 'lamp', lamp)
 
 
 if __name__ == '__main__':
